@@ -10,3 +10,6 @@ contracts/cache/
 contracts/out/
 contracts/broadcast/
 .DS_Store
+
+data/*.sqlite
+data/*.sqlite-*
