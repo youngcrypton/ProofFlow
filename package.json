@@ -1,0 +1,23 @@
+{
+  "name": "proofflow",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "concurrently -k \"npm run dev -w @proofflow/api\" \"npm run dev -w @proofflow/web\"",
+    "build": "npm run build -w @proofflow/domain && npm run build -w @proofflow/api && npm run build -w @proofflow/web",
+    "typecheck": "tsc -b",
+    "test": "vitest run",
+    "check": "npm run typecheck && npm run test && npm run build"
+  },
+  "workspaces": ["packages/*", "apps/*"],
+  "devDependencies": {
+    "@types/react": "^19.1.2",
+    "@types/react-dom": "^19.1.2",
+    "@vitejs/plugin-react": "^4.4.1",
+    "concurrently": "^9.1.2",
+    "typescript": "^5.8.3",
+    "vite": "^6.3.5",
+    "vitest": "^3.1.2"
+  }
+}
