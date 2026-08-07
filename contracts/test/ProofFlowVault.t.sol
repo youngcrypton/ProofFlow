@@ -12,6 +12,7 @@ contract ProofFlowVaultTest is Test {
 
     function setUp() public {
         vm.deal(payer, 10 ether);
+        vm.deal(recipient, 1 ether);
         vault = new ProofFlowVault(payer, recipient, 1 ether, uint64(block.timestamp + 1 days), policyHash);
     }
 
@@ -22,7 +23,7 @@ contract ProofFlowVaultTest is Test {
         vault.commitEvidence(keccak256("evidence"));
         vm.prank(payer);
         vault.release();
-        assertEq(recipient.balance, 1 ether);
+        assertEq(recipient.balance, 2 ether);
         assertTrue(vault.released());
         vm.prank(payer);
         vm.expectRevert(ProofFlowVault.NotReady.selector);
@@ -54,7 +55,9 @@ contract ProofFlowVaultTest is Test {
         vm.prank(payer);
         vault.resolveDispute(false);
         assertEq(payer.balance, 10 ether);
-        assertTrue(vault.released());
+        assertFalse(vault.released());
+        assertFalse(vault.disputed());
+        assertEq(address(vault).balance, 0);
     }
 
     function testRefundAfterDeadline() public {
@@ -70,7 +73,7 @@ contract ProofFlowVaultTest is Test {
         vm.prank(payer);
         vault.pause();
         vm.prank(payer);
-        vm.expectRevert(ProofFlowVault.Paused.selector);
+        vm.expectRevert(ProofFlowVault.VaultPaused.selector);
         vault.fund{value: 1 ether}();
     }
 }

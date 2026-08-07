@@ -11,7 +11,7 @@ contract ProofFlowVault is ReentrancyGuard {
     error InvalidRecipient();
     error NotPayer();
     error NotReady();
-    error Paused();
+    error VaultPaused();
     error TransferFailed();
 
     struct Agreement {
@@ -43,7 +43,7 @@ contract ProofFlowVault is ReentrancyGuard {
     event DisputeResolved(bool released);
     event Released(address indexed recipient, uint256 amount);
     event Refunded(address indexed payer, uint256 amount);
-    event Paused(address indexed account);
+    event PausedStateChanged(address indexed account, bool paused);
     event Unpaused(address indexed account);
 
     constructor(address payer_, address recipient_, uint256 amount_, uint64 deadline_, bytes32 policyHash_) {
@@ -66,7 +66,7 @@ contract ProofFlowVault is ReentrancyGuard {
     }
 
     function commitEvidence(bytes32 evidenceHash_) external {
-        if (paused) revert Paused();
+        if (paused) revert VaultPaused();
         if (msg.sender != payer && msg.sender != recipient) revert NotReady();
         if (!funded || released || disputed) revert NotReady();
         if (evidenceHash_ == bytes32(0)) revert InvalidAmount();
@@ -75,7 +75,7 @@ contract ProofFlowVault is ReentrancyGuard {
     }
 
     function release() external nonReentrant {
-        if (paused) revert Paused();
+        if (paused) revert VaultPaused();
         if (msg.sender != payer) revert NotPayer();
         if (!funded || released || disputed || evidenceHash == bytes32(0)) revert NotReady();
         released = true;
@@ -85,7 +85,7 @@ contract ProofFlowVault is ReentrancyGuard {
     }
 
     function openDispute() external {
-        if (paused) revert Paused();
+        if (paused) revert VaultPaused();
         if (msg.sender != payer && msg.sender != recipient) revert NotReady();
         if (!funded || released || disputed) revert NotReady();
         disputed = true;
@@ -93,7 +93,7 @@ contract ProofFlowVault is ReentrancyGuard {
     }
 
     function resolveDispute(bool releaseFunds) external nonReentrant {
-        if (paused) revert Paused();
+        if (paused) revert VaultPaused();
         if (msg.sender != payer || !disputed || released) revert NotReady();
         disputed = false;
         if (releaseFunds) {
@@ -110,7 +110,7 @@ contract ProofFlowVault is ReentrancyGuard {
     }
 
     function refundAfterDeadline() external nonReentrant {
-        if (paused) revert Paused();
+        if (paused) revert VaultPaused();
         if (msg.sender != payer || !funded || released || disputed || block.timestamp <= deadline) revert NotReady();
         released = true;
         (bool success,) = payable(payer).call{value: address(this).balance}('');
@@ -121,17 +121,17 @@ contract ProofFlowVault is ReentrancyGuard {
     function pause() external {
         if (msg.sender != payer) revert NotPayer();
         paused = true;
-        emit Paused(msg.sender);
+        emit PausedStateChanged(msg.sender, true);
     }
 
     function unpause() external {
         if (msg.sender != payer) revert NotPayer();
         paused = false;
-        emit Unpaused(msg.sender);
+        emit PausedStateChanged(msg.sender, false);
     }
 
     function _fund() internal {
-        if (paused) revert Paused();
+        if (paused) revert VaultPaused();
         if (msg.sender != payer) revert NotPayer();
         if (funded) revert AlreadyFunded();
         if (msg.value != amount) revert InvalidAmount();
