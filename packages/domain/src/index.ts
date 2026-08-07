@@ -2,6 +2,7 @@ import { z } from "zod";
 
 export const XLAYER_TESTNET_CHAIN_ID = 1952 as const;
 export const XLAYER_MAINNET_CHAIN_ID = 196 as const;
+export const MIN_PASS_CONFIDENCE_BPS = 9_000 as const;
 
 export enum JobState {
   DRAFT = "DRAFT",
@@ -11,6 +12,7 @@ export enum JobState {
   UNDER_REVIEW = "UNDER_REVIEW",
   REVIEWED = "REVIEWED",
   READY_TO_RELEASE = "READY_TO_RELEASE",
+  RELEASE_PENDING = "RELEASE_PENDING",
   RELEASED = "RELEASED",
   BLOCKED = "BLOCKED",
   DISPUTED = "DISPUTED",
@@ -32,33 +34,21 @@ export const EvidenceTypeSchema = z.enum([
   "status_update"
 ]);
 
+export type EvidenceType = z.infer<typeof EvidenceTypeSchema>;
+
 export const PolicySchema = z.object({
   version: z.string().min(1).max(64),
   requiredEvidence: z.array(EvidenceTypeSchema).min(1).max(12),
   minimumConfidenceBps: z.number().int().min(0).max(10_000),
   releaseAmountBaseUnits: DecimalIntegerSchema,
   deadline: IsoDateSchema
+}).superRefine((policy, ctx) => {
+  if (new Set(policy.requiredEvidence).size !== policy.requiredEvidence.length) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["requiredEvidence"], message: "Required evidence types must be unique." });
+  }
 });
 
 export type Policy = z.infer<typeof PolicySchema>;
-
-export const AgreementSchema = z.object({
-  id: z.string().min(1),
-  title: z.string().min(1).max(120),
-  description: z.string().max(1_000),
-  payer: EvmAddressSchema,
-  recipient: EvmAddressSchema,
-  tokenAddress: EvmAddressSchema,
-  amountBaseUnits: DecimalIntegerSchema,
-  deadline: IsoDateSchema,
-  policy: PolicySchema,
-  policyHash: Hash32Schema,
-  state: z.nativeEnum(JobState),
-  createdAt: IsoDateSchema,
-  updatedAt: IsoDateSchema
-});
-
-export type Agreement = z.infer<typeof AgreementSchema>;
 
 export const AgreementCreateInputSchema = z.object({
   title: z.string().min(1).max(120),
@@ -69,9 +59,44 @@ export const AgreementCreateInputSchema = z.object({
   amountBaseUnits: DecimalIntegerSchema,
   deadline: IsoDateSchema,
   policy: PolicySchema
+}).superRefine((value, ctx) => {
+  if (BigInt(value.policy.releaseAmountBaseUnits) > BigInt(value.amountBaseUnits)) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["policy", "releaseAmountBaseUnits"], message: "Release amount cannot exceed agreement amount" });
+  }
 });
 
+export const AgreementSchema = z.object({
+  title: z.string().min(1).max(120),
+  description: z.string().max(1_000),
+  payer: EvmAddressSchema,
+  recipient: EvmAddressSchema,
+  tokenAddress: EvmAddressSchema,
+  amountBaseUnits: DecimalIntegerSchema,
+  deadline: IsoDateSchema,
+  policy: PolicySchema,
+  id: z.string().min(1),
+  policyHash: Hash32Schema,
+  state: z.nativeEnum(JobState),
+  createdAt: IsoDateSchema,
+  updatedAt: IsoDateSchema
+});
+
+export const AgreementCreateRequestSchema = AgreementCreateInputSchema;
+
 export type AgreementCreateInput = z.infer<typeof AgreementCreateInputSchema>;
+
+export type Agreement = z.infer<typeof AgreementSchema>;
+
+export function canonicalizePolicy(policy: Policy): string {
+  const parsed = PolicySchema.parse(policy);
+  return JSON.stringify({
+    version: parsed.version,
+    requiredEvidence: [...parsed.requiredEvidence].sort(),
+    minimumConfidenceBps: parsed.minimumConfidenceBps,
+    releaseAmountBaseUnits: parsed.releaseAmountBaseUnits,
+    deadline: parsed.deadline
+  });
+}
 
 export const EvidenceItemSchema = z.object({
   type: EvidenceTypeSchema,
@@ -81,15 +106,26 @@ export const EvidenceItemSchema = z.object({
   uri: z.string().url()
 });
 
-export const EvidenceManifestSchema = z.object({
+export const EvidenceManifestContentSchema = z.object({
   agreementId: z.string().min(1),
   submittedBy: EvmAddressSchema,
   submittedAt: IsoDateSchema,
-  items: z.array(EvidenceItemSchema).min(1).max(50),
-  manifestHash: Hash32Schema
+  items: z.array(EvidenceItemSchema).min(1).max(50)
 });
 
+export const EvidenceManifestSchema = EvidenceManifestContentSchema.extend({ manifestHash: Hash32Schema });
+export type EvidenceManifestContent = z.infer<typeof EvidenceManifestContentSchema>;
 export type EvidenceManifest = z.infer<typeof EvidenceManifestSchema>;
+
+export function canonicalizeEvidenceManifest(manifest: EvidenceManifestContent): string {
+  const parsed = EvidenceManifestContentSchema.parse(manifest);
+  return JSON.stringify({
+    agreementId: parsed.agreementId,
+    submittedBy: parsed.submittedBy.toLowerCase(),
+    submittedAt: parsed.submittedAt,
+    items: [...parsed.items].sort((a, b) => `${a.type}:${a.name}:${a.sha256}`.localeCompare(`${b.type}:${b.name}:${b.sha256}`))
+  });
+}
 
 export const ReviewObservationSchema = z.object({
   requiredEvidencePresent: z.boolean(),
@@ -117,8 +153,9 @@ export type PolicyDecision = z.infer<typeof PolicyDecisionSchema>;
 
 export interface PolicyEvaluationInput {
   policy: Policy;
+  policyHash: string;
   observation: ReviewObservation;
-  manifestTypes: string[];
+  manifestTypes: EvidenceType[];
   manifestIntegrity: boolean;
   evaluatedAt: string;
 }
@@ -140,7 +177,7 @@ export function evaluatePolicy(input: PolicyEvaluationInput): PolicyDecision {
 
   const outcome = reasons.length > 0
     ? "BLOCK"
-    : input.observation.confidenceBps < 8_500
+    : input.observation.confidenceBps < MIN_PASS_CONFIDENCE_BPS
       ? "NEEDS_REVIEW"
       : "PASS";
 
@@ -148,10 +185,42 @@ export function evaluatePolicy(input: PolicyEvaluationInput): PolicyDecision {
     outcome,
     reasons,
     policyVersion: input.policy.version,
-    policyHash: "0x" + "0".repeat(64),
+    policyHash: input.policyHash,
     evaluatedAt: input.evaluatedAt
   });
 }
+
+export const SettlementIntentSchema = z.object({
+  id: z.string().min(1),
+  agreementId: z.string().min(1),
+  idempotencyKey: z.string().min(8).max(128),
+  amountBaseUnits: DecimalIntegerSchema,
+  recipient: EvmAddressSchema,
+  tokenAddress: EvmAddressSchema,
+  policyHash: Hash32Schema,
+  evidenceManifestHash: Hash32Schema,
+  state: z.enum(["CREATED", "AWAITING_AUTHORIZATION", "SUBMITTED", "CONFIRMED", "FAILED", "UNKNOWN"]),
+  createdAt: IsoDateSchema,
+  updatedAt: IsoDateSchema
+});
+
+export type SettlementIntent = z.infer<typeof SettlementIntentSchema>;
+
+export const AuditEventSchema = z.object({
+  id: z.string().min(1),
+  sequence: z.number().int().positive(),
+  aggregateType: z.enum(["AGREEMENT", "EVIDENCE", "POLICY_DECISION", "SETTLEMENT_INTENT"]),
+  aggregateId: z.string().min(1),
+  eventType: z.string().regex(/^[A-Z][A-Z0-9_]{2,63}$/),
+  actor: z.string().min(1).max(120),
+  occurredAt: IsoDateSchema,
+  correlationId: z.string().min(1).max(120),
+  payloadHash: Hash32Schema,
+  previousEventHash: Hash32Schema,
+  eventHash: Hash32Schema
+});
+
+export type AuditEvent = z.infer<typeof AuditEventSchema>;
 
 export const ReleaseGateResultSchema = z.object({
   outcome: z.enum(["PASS", "BLOCK", "NEEDS_REVIEW"]),
@@ -186,7 +255,7 @@ export function evaluateReleaseGate(input: ReleaseGateInput): ReleaseGateResult 
 
   const outcome = reasons.length > 0
     ? "BLOCK"
-    : input.observation.confidenceBps < 8_500
+    : input.observation.confidenceBps < MIN_PASS_CONFIDENCE_BPS
       ? "NEEDS_REVIEW"
       : "PASS";
 
