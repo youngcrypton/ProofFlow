@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { AuditEventSchema } from "@proofflow/domain";
-import type { Agreement, AuditEvent, EvidenceManifest, SettlementIntent } from "@proofflow/domain";
+import type { Agreement, AuditEvent, EvidenceManifest, ReviewRun, SettlementIntent } from "@proofflow/domain";
 import type { AuditEventInput, ProofFlowRepository } from "./repository";
 
 const ZERO_HASH = `0x${"0".repeat(64)}`;
@@ -16,6 +16,7 @@ function copy<T>(value: T): T {
 export class MemoryRepository implements ProofFlowRepository {
   private readonly agreements = new Map<string, Agreement>();
   private readonly manifests = new Map<string, EvidenceManifest>();
+  private readonly reviewRuns = new Map<string, ReviewRun[]>();
   private readonly settlementIntents = new Map<string, SettlementIntent>();
   private readonly auditEvents = new Map<string, AuditEvent[]>();
 
@@ -39,6 +40,17 @@ export class MemoryRepository implements ProofFlowRepository {
 
   saveManifest(manifest: EvidenceManifest): void {
     this.manifests.set(manifest.agreementId, copy(manifest));
+  }
+
+  getLatestReviewRun(agreementId: string): ReviewRun | undefined {
+    const runs = this.reviewRuns.get(agreementId) ?? [];
+    const review = runs.at(-1);
+    return review ? copy(review) : undefined;
+  }
+
+  saveReviewRun(reviewRun: ReviewRun): void {
+    const runs = this.reviewRuns.get(reviewRun.agreementId) ?? [];
+    this.reviewRuns.set(reviewRun.agreementId, [...runs, copy(reviewRun)]);
   }
 
   getSettlementIntent(id: string): SettlementIntent | undefined {

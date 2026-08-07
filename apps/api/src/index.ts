@@ -15,6 +15,7 @@ import {
 } from "@proofflow/domain";
 import { MemoryRepository } from "./memory-repository";
 import type { ProofFlowRepository } from "./repository";
+import { DeterministicDemoReviewer, runReview } from "./reviewer";
 
 export function createApp(repository: ProofFlowRepository = new MemoryRepository()) {
   const app = new Hono();
@@ -95,6 +96,29 @@ export function createApp(repository: ProofFlowRepository = new MemoryRepository
     repository.saveAgreement(updated);
     repository.appendAuditEvent({ aggregateType: "POLICY_DECISION", aggregateId: id, eventType: "POLICY_EVALUATED", actor: "policy-engine", occurredAt: decision.evaluatedAt, correlationId: id }, { decision, manifestHash: manifest.manifestHash });
     return c.json({ data: { agreement: updated, decision } });
+  });
+
+  app.post("/api/v1/agreements/:id/review", async (c) => {
+    const id = c.req.param("id");
+    const agreement = repository.getAgreement(id);
+    const manifest = repository.getManifest(id);
+    if (!agreement) return c.json({ error: { code: "NOT_FOUND", message: "Agreement not found." } }, 404);
+    if (!manifest) return c.json({ error: { code: "INVALID_STATE", message: "Evidence must be submitted before review." } }, 409);
+    if (agreement.state !== JobState.EVIDENCE_SUBMITTED && agreement.state !== JobState.UNDER_REVIEW) return c.json({ error: { code: "INVALID_STATE", message: "Agreement is not awaiting evidence review." } }, 409);
+    const body = z.object({ evidenceText: z.string().max(40_000).default("") }).safeParse(await c.req.json().catch(() => ({})));
+    if (!body.success) return c.json({ error: { code: "VALIDATION_ERROR", message: "Review input is invalid.", fields: body.error.flatten().fieldErrors } }, 400);
+    const reviewRun = await runReview(new DeterministicDemoReviewer(), { agreementId: id, manifest, evidenceText: body.data.evidenceText });
+    repository.saveReviewRun(reviewRun);
+    const updated = AgreementSchema.parse({ ...agreement, state: reviewRun.status === "SUCCEEDED" ? JobState.REVIEWED : JobState.UNDER_REVIEW, updatedAt: reviewRun.completedAt ?? reviewRun.createdAt });
+    repository.saveAgreement(updated);
+    repository.appendAuditEvent({ aggregateType: "POLICY_DECISION", aggregateId: id, eventType: "AI_REVIEW_COMPLETED", actor: reviewRun.provider.provider, occurredAt: reviewRun.completedAt ?? reviewRun.createdAt, correlationId: id }, { reviewRunId: reviewRun.id, status: reviewRun.status, outputHash: reviewRun.outputHash });
+    return c.json({ data: { agreement: updated, reviewRun } }, 201);
+  });
+
+  app.get("/api/v1/agreements/:id/reviews/latest", (c) => {
+    const reviewRun = repository.getLatestReviewRun(c.req.param("id"));
+    if (!reviewRun) return c.json({ error: { code: "NOT_FOUND", message: "Review run not found." } }, 404);
+    return c.json({ data: reviewRun });
   });
 
   app.post("/api/v1/agreements/:id/settlement-intents", async (c) => {

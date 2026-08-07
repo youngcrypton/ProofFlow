@@ -2,8 +2,8 @@ import { createHash, randomUUID } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { Database } from "bun:sqlite";
-import { AgreementSchema, AuditEventSchema, EvidenceManifestSchema, SettlementIntentSchema } from "@proofflow/domain";
-import type { Agreement, AuditEvent, EvidenceManifest, SettlementIntent } from "@proofflow/domain";
+import { AgreementSchema, AuditEventSchema, EvidenceManifestSchema, ReviewRunSchema, SettlementIntentSchema } from "@proofflow/domain";
+import type { Agreement, AuditEvent, EvidenceManifest, ReviewRun, SettlementIntent } from "@proofflow/domain";
 import type { AuditEventInput, ProofFlowRepository } from "./repository";
 
 const ZERO_HASH = `0x${"0".repeat(64)}`;
@@ -23,6 +23,7 @@ export class SqliteRepository implements ProofFlowRepository {
       PRAGMA foreign_keys = ON;
       CREATE TABLE IF NOT EXISTS agreements (id TEXT PRIMARY KEY, payload TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS manifests (agreement_id TEXT PRIMARY KEY, payload TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS review_runs (id TEXT PRIMARY KEY, agreement_id TEXT NOT NULL, created_at TEXT NOT NULL, payload TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS settlement_intents (id TEXT PRIMARY KEY, idempotency_key TEXT NOT NULL UNIQUE, payload TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS audit_events (aggregate_id TEXT NOT NULL, sequence INTEGER NOT NULL, event_hash TEXT NOT NULL UNIQUE, payload TEXT NOT NULL, PRIMARY KEY (aggregate_id, sequence));
     `);
@@ -48,6 +49,15 @@ export class SqliteRepository implements ProofFlowRepository {
 
   saveManifest(manifest: EvidenceManifest): void {
     this.db.query("INSERT INTO manifests (agreement_id, payload) VALUES (?1, ?2) ON CONFLICT(agreement_id) DO UPDATE SET payload = excluded.payload").run(manifest.agreementId, JSON.stringify(manifest));
+  }
+
+  getLatestReviewRun(agreementId: string): ReviewRun | undefined {
+    const row = this.db.query("SELECT payload FROM review_runs WHERE agreement_id = ?1 ORDER BY created_at DESC LIMIT 1").get(agreementId) as { payload: string } | null;
+    return row ? ReviewRunSchema.parse(JSON.parse(row.payload)) : undefined;
+  }
+
+  saveReviewRun(reviewRun: ReviewRun): void {
+    this.db.query("INSERT INTO review_runs (id, agreement_id, created_at, payload) VALUES (?1, ?2, ?3, ?4)").run(reviewRun.id, reviewRun.agreementId, reviewRun.createdAt, JSON.stringify(reviewRun));
   }
 
   getSettlementIntent(id: string): SettlementIntent | undefined {

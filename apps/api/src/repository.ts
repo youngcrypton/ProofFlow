@@ -1,4 +1,4 @@
-import type { Agreement, AuditEvent, EvidenceManifest, SettlementIntent } from "@proofflow/domain";
+import type { Agreement, AuditEvent, EvidenceManifest, ReviewRun, SettlementIntent } from "@proofflow/domain";
 
 export type AuditEventInput = Omit<AuditEvent, "id" | "sequence" | "payloadHash" | "previousEventHash" | "eventHash">;
 
@@ -8,6 +8,8 @@ export interface ProofFlowRepository {
   saveAgreement(agreement: Agreement): void;
   getManifest(agreementId: string): EvidenceManifest | undefined;
   saveManifest(manifest: EvidenceManifest): void;
+  getLatestReviewRun(agreementId: string): ReviewRun | undefined;
+  saveReviewRun(reviewRun: ReviewRun): void;
   getSettlementIntent(id: string): SettlementIntent | undefined;
   getSettlementIntentByIdempotencyKey(key: string): SettlementIntent | undefined;
   saveSettlementIntent(intent: SettlementIntent): void;

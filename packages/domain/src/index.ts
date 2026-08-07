@@ -141,6 +141,29 @@ export const ReviewObservationSchema = z.object({
 
 export type ReviewObservation = z.infer<typeof ReviewObservationSchema>;
 
+export const ReviewerProviderSchema = z.object({
+  provider: z.string().min(1).max(80),
+  model: z.string().min(1).max(160),
+  promptVersion: z.string().min(1).max(80)
+});
+
+export const ReviewRunSchema = z.object({
+  id: z.string().min(1),
+  agreementId: z.string().min(1),
+  evidenceManifestHash: Hash32Schema,
+  provider: ReviewerProviderSchema,
+  observation: ReviewObservationSchema,
+  inputHash: Hash32Schema,
+  outputHash: Hash32Schema,
+  status: z.enum(["SUCCEEDED", "NEEDS_REVIEW", "FAILED"]),
+  createdAt: IsoDateSchema,
+  completedAt: IsoDateSchema.optional(),
+  errorCode: z.string().regex(/^[A-Z][A-Z0-9_]{2,63}$/).optional()
+});
+
+export type ReviewerProvider = z.infer<typeof ReviewerProviderSchema>;
+export type ReviewRun = z.infer<typeof ReviewRunSchema>;
+
 export const PolicyDecisionSchema = z.object({
   outcome: z.enum(["PASS", "BLOCK", "NEEDS_REVIEW"]),
   reasons: z.array(z.string()),
