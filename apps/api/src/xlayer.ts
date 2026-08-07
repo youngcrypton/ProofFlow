@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { encodeFunctionData } from "viem";
 
 export const X_LAYER_TESTNET_CHAIN_ID = 1952;
 export const X_LAYER_MAINNET_CHAIN_ID = 196;
@@ -75,4 +76,128 @@ export class XLayerClient {
     const chainId = await this.assertExpectedNetwork();
     return { rpcUrl: this.rpcUrl, chainId, blockNumber: await this.getBlockNumber() };
   }
+}
+
+
+export const PROOFFLOW_VAULT_ABI = [
+  { type: "function", name: "payer", stateMutability: "view", inputs: [], outputs: [{ type: "address" }] },
+  { type: "function", name: "recipient", stateMutability: "view", inputs: [], outputs: [{ type: "address" }] },
+  { type: "function", name: "amount", stateMutability: "view", inputs: [], outputs: [{ type: "uint256" }] },
+  { type: "function", name: "deadline", stateMutability: "view", inputs: [], outputs: [{ type: "uint64" }] },
+  { type: "function", name: "policyHash", stateMutability: "view", inputs: [], outputs: [{ type: "bytes32" }] },
+  { type: "function", name: "evidenceHash", stateMutability: "view", inputs: [], outputs: [{ type: "bytes32" }] },
+  { type: "function", name: "funded", stateMutability: "view", inputs: [], outputs: [{ type: "bool" }] },
+  { type: "function", name: "released", stateMutability: "view", inputs: [], outputs: [{ type: "bool" }] },
+  { type: "function", name: "disputed", stateMutability: "view", inputs: [], outputs: [{ type: "bool" }] },
+  { type: "function", name: "paused", stateMutability: "view", inputs: [], outputs: [{ type: "bool" }] },
+  { type: "function", name: "commitEvidence", stateMutability: "nonpayable", inputs: [{ name: "evidenceHash_", type: "bytes32" }], outputs: [] },
+  { type: "function", name: "release", stateMutability: "nonpayable", inputs: [], outputs: [] },
+  { type: "function", name: "fund", stateMutability: "payable", inputs: [], outputs: [] }
+] as const;
+
+export interface VaultSnapshot {
+  address: `0x${string}`;
+  payer: `0x${string}`;
+  recipient: `0x${string}`;
+  amount: bigint;
+  deadline: bigint;
+  policyHash: `0x${string}`;
+  evidenceHash: `0x${string}`;
+  funded: boolean;
+  released: boolean;
+  disputed: boolean;
+  paused: boolean;
+  balance: bigint;
+}
+
+export interface VaultTransactionPreview {
+  to: `0x${string}`;
+  value: bigint;
+  data: `0x${string}`;
+  method: "fund" | "commitEvidence" | "release";
+}
+
+export interface VaultClientOptions extends XLayerClientOptions {
+  vaultAddress: `0x${string}`;
+}
+
+export class ProofFlowVaultClient extends XLayerClient {
+  private readonly vaultAddress: `0x${string}`;
+
+  constructor(options: VaultClientOptions) {
+    super(options);
+    this.vaultAddress = options.vaultAddress;
+  }
+
+  get address(): `0x${string}` {
+    return this.vaultAddress;
+  }
+
+  async snapshot(): Promise<VaultSnapshot> {
+    await this.assertExpectedNetwork();
+    const calls = await Promise.all([
+      this.request("eth_call", [{ to: this.vaultAddress, data: encodeFunctionData({ abi: PROOFFLOW_VAULT_ABI, functionName: "payer" }) }, "latest"]),
+      this.request("eth_call", [{ to: this.vaultAddress, data: encodeFunctionData({ abi: PROOFFLOW_VAULT_ABI, functionName: "recipient" }) }, "latest"]),
+      this.request("eth_call", [{ to: this.vaultAddress, data: encodeFunctionData({ abi: PROOFFLOW_VAULT_ABI, functionName: "amount" }) }, "latest"]),
+      this.request("eth_call", [{ to: this.vaultAddress, data: encodeFunctionData({ abi: PROOFFLOW_VAULT_ABI, functionName: "deadline" }) }, "latest"]),
+      this.request("eth_call", [{ to: this.vaultAddress, data: encodeFunctionData({ abi: PROOFFLOW_VAULT_ABI, functionName: "policyHash" }) }, "latest"]),
+      this.request("eth_call", [{ to: this.vaultAddress, data: encodeFunctionData({ abi: PROOFFLOW_VAULT_ABI, functionName: "evidenceHash" }) }, "latest"]),
+      this.request("eth_call", [{ to: this.vaultAddress, data: encodeFunctionData({ abi: PROOFFLOW_VAULT_ABI, functionName: "funded" }) }, "latest"]),
+      this.request("eth_call", [{ to: this.vaultAddress, data: encodeFunctionData({ abi: PROOFFLOW_VAULT_ABI, functionName: "released" }) }, "latest"]),
+      this.request("eth_call", [{ to: this.vaultAddress, data: encodeFunctionData({ abi: PROOFFLOW_VAULT_ABI, functionName: "disputed" }) }, "latest"]),
+      this.request("eth_call", [{ to: this.vaultAddress, data: encodeFunctionData({ abi: PROOFFLOW_VAULT_ABI, functionName: "paused" }) }, "latest"]),
+      this.request("eth_getBalance", [this.vaultAddress, "latest"])
+    ]);
+    return {
+      address: this.vaultAddress,
+      payer: decodeAddress(calls[0]),
+      recipient: decodeAddress(calls[1]),
+      amount: hexToBigInt(calls[2], "amount"),
+      deadline: hexToBigInt(calls[3], "deadline"),
+      policyHash: normalizeBytes32(calls[4]),
+      evidenceHash: normalizeBytes32(calls[5]),
+      funded: decodeBool(calls[6]),
+      released: decodeBool(calls[7]),
+      disputed: decodeBool(calls[8]),
+      paused: decodeBool(calls[9]),
+      balance: hexToBigInt(calls[10], "balance")
+    };
+  }
+
+  previewFund(amount: bigint): VaultTransactionPreview {
+    if (amount <= 0n) throw new Error("Funding amount must be greater than zero");
+    return { to: this.vaultAddress, value: amount, data: encodeFunctionData({ abi: PROOFFLOW_VAULT_ABI, functionName: "fund" }), method: "fund" };
+  }
+
+  previewCommitEvidence(evidenceHash: `0x${string}`): VaultTransactionPreview {
+    normalizeBytes32(evidenceHash);
+    return { to: this.vaultAddress, value: 0n, data: encodeFunctionData({ abi: PROOFFLOW_VAULT_ABI, functionName: "commitEvidence", args: [evidenceHash] }), method: "commitEvidence" };
+  }
+
+  previewRelease(): VaultTransactionPreview {
+    return { to: this.vaultAddress, value: 0n, data: encodeFunctionData({ abi: PROOFFLOW_VAULT_ABI, functionName: "release" }), method: "release" };
+  }
+
+  async assertMatchesAgreement(input: { payer: string; recipient: string; amountBaseUnits: string; policyHash: string }): Promise<VaultSnapshot> {
+    const snapshot = await this.snapshot();
+    if (snapshot.payer.toLowerCase() !== input.payer.toLowerCase()) throw new Error("Vault payer does not match agreement");
+    if (snapshot.recipient.toLowerCase() !== input.recipient.toLowerCase()) throw new Error("Vault recipient does not match agreement");
+    if (snapshot.amount !== BigInt(input.amountBaseUnits)) throw new Error("Vault amount does not match agreement");
+    if (snapshot.policyHash.toLowerCase() !== input.policyHash.toLowerCase()) throw new Error("Vault policy hash does not match agreement");
+    return snapshot;
+  }
+}
+
+function normalizeBytes32(value: string): `0x${string}` {
+  if (!/^0x[0-9a-f]{64}$/i.test(value)) throw new Error("Invalid bytes32 response");
+  return value as `0x${string}`;
+}
+
+function decodeAddress(value: string): `0x${string}` {
+  const normalized = normalizeBytes32(value);
+  return `0x${normalized.slice(-40)}` as `0x${string}`;
+}
+
+function decodeBool(value: string): boolean {
+  return BigInt(value) !== 0n;
 }

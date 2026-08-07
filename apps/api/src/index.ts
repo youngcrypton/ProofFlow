@@ -15,7 +15,7 @@ import {
 } from "@proofflow/domain";
 import { MemoryRepository } from "./memory-repository";
 import type { ProofFlowRepository } from "./repository";
-import { XLayerClient } from "./xlayer";
+import { ProofFlowVaultClient, XLayerClient } from "./xlayer";
 import { DeterministicDemoReviewer, runReview } from "./reviewer";
 
 export function createApp(repository: ProofFlowRepository = new MemoryRepository()) {
@@ -40,6 +40,22 @@ export function createApp(repository: ProofFlowRepository = new MemoryRepository
   });
 
   app.get("/api/v1/agreements", (c) => c.json({ data: repository.listAgreements(), nextCursor: null }));
+
+  app.get("/api/v1/agreements/:id/chain-preview", async (c) => {
+    const id = c.req.param("id");
+    const agreement = repository.getAgreement(id);
+    if (!agreement) return c.json({ error: { code: "NOT_FOUND", message: "Agreement not found." } }, 404);
+    const vaultAddress = process.env.PROOFFLOW_VAULT_ADDRESS;
+    if (!vaultAddress || !/^0x[a-fA-F0-9]{40}$/.test(vaultAddress)) return c.json({ error: { code: "VAULT_NOT_CONFIGURED", message: "ProofFlow vault address is not configured." } }, 503);
+    try {
+      const client = new ProofFlowVaultClient({ rpcUrl: process.env.XLAYER_RPC_URL ?? "https://testrpc.xlayer.tech/terigon", expectedChainId: Number(process.env.XLAYER_CHAIN_ID ?? 1952), vaultAddress: vaultAddress as `0x${string}` });
+      const snapshot = await client.assertMatchesAgreement({ payer: agreement.payer, recipient: agreement.recipient, amountBaseUnits: agreement.policy.releaseAmountBaseUnits, policyHash: agreement.policyHash });
+      return c.json({ data: { agreementId: id, network: { chainId: snapshot ? Number(process.env.XLAYER_CHAIN_ID ?? 1952) : 0, rpcUrl: process.env.XLAYER_RPC_URL ?? "https://testrpc.xlayer.tech/terigon" }, vault: { ...snapshot, amount: snapshot.amount.toString(), deadline: snapshot.deadline.toString(), balance: snapshot.balance.toString() }, transactions: { fund: client.previewFund(snapshot.amount), commitEvidence: repository.getManifest(id) ? client.previewCommitEvidence(repository.getManifest(id)!.manifestHash as `0x${string}`) : null, release: client.previewRelease() } } });
+    } catch (error) {
+      return c.json({ error: { code: "VAULT_MISMATCH", message: error instanceof Error ? error.message : "Vault verification failed." } }, 409);
+    }
+  });
+
 
   app.post("/api/v1/agreements/validate", async (c) => {
     const parsed = AgreementCreateInputSchema.safeParse(await c.req.json().catch(() => null));
