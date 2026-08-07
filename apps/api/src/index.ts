@@ -109,6 +109,12 @@ export function createApp(repository: ProofFlowRepository = new MemoryRepository
     return c.json({ data: { agreement: updated, manifest } }, 201);
   });
 
+  app.get("/api/v1/agreements/:id/evidence", (c) => {
+    const manifest = repository.getManifest(c.req.param("id"));
+    if (!manifest) return c.json({ error: { code: "NOT_FOUND", message: "Evidence manifest not found." } }, 404);
+    return c.json({ data: manifest });
+  });
+
   app.post("/api/v1/agreements/:id/evaluate", async (c) => {
     const id = c.req.param("id");
     const agreement = repository.getAgreement(id);
