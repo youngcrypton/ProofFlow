@@ -15,6 +15,7 @@ import {
 } from "@proofflow/domain";
 import { MemoryRepository } from "./memory-repository";
 import type { ProofFlowRepository } from "./repository";
+import { XLayerClient } from "./xlayer";
 import { DeterministicDemoReviewer, runReview } from "./reviewer";
 
 export function createApp(repository: ProofFlowRepository = new MemoryRepository()) {
@@ -27,6 +28,16 @@ export function createApp(repository: ProofFlowRepository = new MemoryRepository
   };
 
   app.get("/health", (c) => c.json({ ok: true, service: "proofflow-api", timestamp: new Date().toISOString() }));
+
+  app.get("/api/v1/xlayer/status", async (c) => {
+    try {
+      const client = new XLayerClient({ rpcUrl: process.env.XLAYER_RPC_URL ?? "https://testrpc.xlayer.tech/terigon", expectedChainId: Number(process.env.XLAYER_CHAIN_ID ?? 1952) });
+      const status = await client.getStatus();
+      return c.json({ data: { ...status, blockNumber: status.blockNumber.toString() } });
+    } catch (error) {
+      return c.json({ error: { code: "XLAYER_UNAVAILABLE", message: error instanceof Error ? error.message : "X Layer status unavailable." } }, 503);
+    }
+  });
 
   app.get("/api/v1/agreements", (c) => c.json({ data: repository.listAgreements(), nextCursor: null }));
 
