@@ -1,41 +1,78 @@
 import { describe, expect, it } from "vitest";
-import { JobState, evaluateReleaseGate } from "./index";
+import { JobState, PolicySchema, evaluatePolicy, evaluateReleaseGate } from "./index";
 
-const baseInput = {
-  manifestIntegrity: true,
-  observation: {
-    requiredEvidencePresent: true,
-    extractedFacts: [],
-    contradictions: [],
-    missingItems: [],
-    confidence: 0.95
-  },
-  deterministicRulesPass: true,
-  agreementState: JobState.FUNDED,
-  milestoneStatus: "REVIEWED" as const,
-  humanOverride: false,
-  policyVersion: "invoice-v1",
-  evaluatedAt: "2026-08-07T00:00:00.000Z"
+const baseObservation = {
+  requiredEvidencePresent: true,
+  extractedFacts: [],
+  contradictions: [],
+  missingItems: [],
+  confidenceBps: 9_500
 };
 
-describe("evaluateReleaseGate", () => {
+const basePolicy = PolicySchema.parse({
+  version: "invoice-v1",
+  requiredEvidence: ["invoice"],
+  minimumConfidenceBps: 8_000,
+  releaseAmountBaseUnits: "1000000",
+  deadline: "2099-08-07T00:00:00.000Z"
+});
+
+describe("evaluatePolicy", () => {
   it("passes complete, high-confidence evidence", () => {
-    expect(evaluateReleaseGate(baseInput)).toMatchObject({ outcome: "PASS", reasons: [] });
+    expect(evaluatePolicy({
+      policy: basePolicy,
+      observation: baseObservation,
+      manifestTypes: ["invoice"],
+      manifestIntegrity: true,
+      evaluatedAt: "2026-08-07T00:00:00.000Z"
+    })).toMatchObject({ outcome: "PASS", reasons: [] });
   });
 
-  it("blocks when evidence integrity fails", () => {
-    expect(evaluateReleaseGate({ ...baseInput, manifestIntegrity: false }).outcome).toBe("BLOCK");
-  });
-
-  it("blocks when policy rules fail", () => {
-    expect(evaluateReleaseGate({ ...baseInput, deterministicRulesPass: false }).reasons).toContain("Deterministic policy rules did not pass.");
+  it("blocks missing required evidence", () => {
+    expect(evaluatePolicy({
+      policy: basePolicy,
+      observation: baseObservation,
+      manifestTypes: [],
+      manifestIntegrity: true,
+      evaluatedAt: "2026-08-07T00:00:00.000Z"
+    }).outcome).toBe("BLOCK");
   });
 
   it("requires review for uncertain AI output", () => {
-    expect(evaluateReleaseGate({ ...baseInput, observation: { ...baseInput.observation, confidence: 0.84 } }).outcome).toBe("NEEDS_REVIEW");
+    expect(evaluatePolicy({
+      policy: basePolicy,
+      observation: { ...baseObservation, confidenceBps: 8_400 },
+      manifestTypes: ["invoice"],
+      manifestIntegrity: true,
+      evaluatedAt: "2026-08-07T00:00:00.000Z"
+    }).outcome).toBe("NEEDS_REVIEW");
+  });
+});
+
+describe("evaluateReleaseGate", () => {
+  it("passes a funded reviewed agreement", () => {
+    expect(evaluateReleaseGate({
+      manifestIntegrity: true,
+      observation: baseObservation,
+      deterministicRulesPass: true,
+      agreementState: JobState.FUNDED,
+      milestoneStatus: "REVIEWED",
+      humanOverride: false,
+      policyVersion: "invoice-v1",
+      evaluatedAt: "2026-08-07T00:00:00.000Z"
+    })).toMatchObject({ outcome: "PASS", reasons: [] });
   });
 
   it("blocks every non-funded agreement", () => {
-    expect(evaluateReleaseGate({ ...baseInput, agreementState: JobState.DRAFT }).outcome).toBe("BLOCK");
+    expect(evaluateReleaseGate({
+      manifestIntegrity: true,
+      observation: baseObservation,
+      deterministicRulesPass: true,
+      agreementState: JobState.DRAFT,
+      milestoneStatus: "REVIEWED",
+      humanOverride: false,
+      policyVersion: "invoice-v1",
+      evaluatedAt: "2026-08-07T00:00:00.000Z"
+    }).outcome).toBe("BLOCK");
   });
 });

@@ -10,7 +10,7 @@ const sampleGate = evaluateReleaseGate({
     extractedFacts: [{ key: "delivery_status", value: "complete", source: "invoice.pdf" }],
     contradictions: [],
     missingItems: [],
-    confidence: 0.94
+    confidenceBps: 9_400
   },
   deterministicRulesPass: true,
   agreementState: JobState.FUNDED,
