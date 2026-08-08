@@ -309,9 +309,11 @@ export function createApp(repository: ProofFlowRepository = new MemoryRepository
     const manifest = repository.getManifest(id);
     if (!agreement) return c.json({ error: { code: "NOT_FOUND", message: "Agreement not found." } }, 404);
     if (!manifest) return c.json({ error: { code: "INVALID_STATE", message: "Evidence must be submitted before evaluation." } }, 409);
-    const parsed = z.object({ manifestTypes: z.array(EvidenceTypeSchema), manifestIntegrity: z.boolean(), observation: ReviewObservationSchema }).safeParse(await c.req.json().catch(() => null));
-    if (!parsed.success) return c.json({ error: { code: "VALIDATION_ERROR", message: "Evaluation input is invalid.", fields: parsed.error.flatten().fieldErrors } }, 400);
-    const decision = evaluatePolicy({ policy: agreement.policy, policyHash: agreement.policyHash, ...parsed.data, evaluatedAt: new Date().toISOString() });
+    const reviewRun = repository.getLatestReviewRun(id);
+    if (!reviewRun || reviewRun.status !== "SUCCEEDED" || reviewRun.evidenceManifestHash !== manifest.manifestHash) return c.json({ error: { code: "REVIEW_REQUIRED", message: "A successful review of the current evidence is required before policy evaluation." } }, 409);
+    const manifestTypes = manifest.items.map((item) => item.type);
+    const manifestIntegrity = manifest.items.every((item) => /^0x[a-f0-9]{64}$/i.test(item.sha256)) && reviewRun.evidenceManifestHash === manifest.manifestHash;
+    const decision = evaluatePolicy({ policy: agreement.policy, policyHash: agreement.policyHash, manifestTypes, manifestIntegrity, observation: reviewRun.observation, evaluatedAt: new Date().toISOString() });
     const nextState = decision.outcome === "PASS" ? JobState.READY_TO_RELEASE : decision.outcome === "BLOCK" ? JobState.BLOCKED : JobState.UNDER_REVIEW;
     const updated = AgreementSchema.parse({ ...agreement, state: nextState, updatedAt: decision.evaluatedAt });
     repository.saveAgreement(updated);

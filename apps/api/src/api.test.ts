@@ -10,8 +10,8 @@ const createInput = () => ({
   recipient: address("2"),
   tokenAddress: address("3"),
   amountBaseUnits: "1000",
-  deadline: "2030-01-01T00:00:00.000Z",
-  policy: { version: "invoice-v1", requiredEvidence: ["invoice"], minimumConfidenceBps: 9000, releaseAmountBaseUnits: "1000", deadline: "2030-01-01T00:00:00.000Z" }
+  deadline: "2099-01-01T00:00:00.000Z",
+  policy: { version: "invoice-v1", requiredEvidence: ["invoice"], minimumConfidenceBps: 9000, releaseAmountBaseUnits: "1000", deadline: "2099-01-01T00:00:00.000Z" }
 });
 const json = (body: unknown): RequestInit => ({ method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
 
