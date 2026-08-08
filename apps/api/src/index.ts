@@ -51,7 +51,7 @@ export function createApp(repository: ProofFlowRepository = new MemoryRepository
   app.use("*", cors({
     origin: allowedOrigin,
     allowMethods: ["GET", "POST", "OPTIONS"],
-    allowHeaders: ["Content-Type", "Accept", "X-Request-Id"],
+    allowHeaders: ["Content-Type", "Accept", "Authorization", "X-Request-Id"],
     maxAge: 600
   }));
   app.use("*", async (c, next) => {
@@ -294,13 +294,19 @@ export function createApp(repository: ProofFlowRepository = new MemoryRepository
   });
 
   app.get("/api/v1/evidence/blobs/:digest", async (c) => {
+    const evidenceRequiresAuth = process.env.NODE_ENV === "production" || process.env.PROOFFLOW_EVIDENCE_REQUIRE_AUTH === "true";
+    const evidenceToken = process.env.PROOFFLOW_API_TOKEN;
+    if (evidenceRequiresAuth && (!evidenceToken || c.req.header("authorization") !== `Bearer ${evidenceToken}`)) {
+      return c.json({ error: { code: "UNAUTHORIZED", message: "A valid evidence access token is required." } }, 401);
+    }
     const digest = c.req.param("digest");
     const bytes = await evidenceStore.get(digest);
     if (!bytes) return c.json({ error: { code: "NOT_FOUND", message: "Evidence blob not found." } }, 404);
     const manifest = repository.listAgreements().map((agreement) => repository.getManifest(agreement.id)).find((item) => item?.items.some((entry) => entry.sha256.toLowerCase() === digest.toLowerCase().replace(/^0x/, "")));
     if (!manifest) return c.json({ error: { code: "NOT_FOUND", message: "Evidence blob not found." } }, 404);
     const item = manifest.items.find((entry) => entry.sha256.toLowerCase() === digest.toLowerCase().replace(/^0x/, ""));
-    return new Response(Buffer.from(bytes), { headers: { "content-type": item?.mediaType ?? "application/octet-stream", "content-length": String(bytes.byteLength), "content-disposition": `attachment; filename="${item?.name ?? "evidence"}"`, "x-content-address": `0x${digest.replace(/^0x/, "")}` } });
+    const filename = (item?.name ?? "evidence").replace(/[^A-Za-z0-9._-]/g, "_").slice(0, 160) || "evidence";
+    return new Response(Buffer.from(bytes), { headers: { "content-type": item?.mediaType ?? "application/octet-stream", "content-length": String(bytes.byteLength), "content-disposition": `attachment; filename="${filename}"`, "x-content-address": `0x${digest.replace(/^0x/, "")}` } });
   });
 
   app.post("/api/v1/agreements/:id/evaluate", async (c) => {
