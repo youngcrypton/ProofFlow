@@ -1,6 +1,6 @@
 # X Layer deployment procedure
 
-The deployment script is deliberately fail-closed. It only permits X Layer testnet (`1952`) or mainnet (`196`), requires explicit constructor inputs, and reads the deployer key only from the process environment.
+The deployment script is deliberately fail-closed. It only permits X Layer testnet (`1952`), requires explicit constructor inputs, and reads the deployer key only from the process environment.
 
 ## Testnet only
 

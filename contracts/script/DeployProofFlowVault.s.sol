@@ -10,7 +10,7 @@ contract DeployProofFlowVault is Script {
 
     function run() external returns (ProofFlowVault vault) {
         uint256 chainId = block.chainid;
-        require(chainId == XLAYER_TESTNET_CHAIN_ID || chainId == XLAYER_MAINNET_CHAIN_ID, "unsupported X Layer chain");
+        require(chainId == XLAYER_TESTNET_CHAIN_ID, "testnet only");
 
         address payer = vm.envAddress("PROOFFLOW_PAYER");
         address recipient = vm.envAddress("PROOFFLOW_RECIPIENT");
