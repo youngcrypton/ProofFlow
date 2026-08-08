@@ -21,6 +21,7 @@ import { DeterministicDemoReviewer, runReview } from "./reviewer";
 const MAX_BODY_BYTES = 1_000_000;
 const RATE_WINDOW_MS = 60_000;
 const RATE_LIMIT = Number(process.env.PROOFFLOW_RATE_LIMIT ?? 60);
+const RPC_TIMEOUT_MS = Number(process.env.PROOFFLOW_RPC_TIMEOUT_MS ?? 8_000);
 const requestBuckets = new Map<string, { startedAt: number; count: number }>();
 
 function clientKey(request: Request): string {
@@ -85,7 +86,7 @@ export function createApp(repository: ProofFlowRepository = new MemoryRepository
 
   app.get("/api/v1/xlayer/status", async (c) => {
     try {
-      const client = new XLayerClient({ rpcUrl: xLayerRpcUrl, expectedChainId: xLayerChainId });
+      const client = new XLayerClient({ rpcUrl: xLayerRpcUrl, expectedChainId: xLayerChainId, timeoutMs: RPC_TIMEOUT_MS });
       const status = await client.getStatus();
       return c.json({ data: { chainId: status.chainId, blockNumber: status.blockNumber.toString(), network: status.chainId === 196 ? "X Layer mainnet" : "X Layer testnet" } });
     } catch {
@@ -134,7 +135,7 @@ export function createApp(repository: ProofFlowRepository = new MemoryRepository
     if (!agreement) return c.json({ error: { code: "NOT_FOUND", message: "Agreement not found." } }, 404);
     if (!vaultAddress || !/^0x[a-fA-F0-9]{40}$/.test(vaultAddress)) return c.json({ error: { code: "VAULT_NOT_CONFIGURED", message: "ProofFlow vault address is not configured." } }, 503);
     try {
-      const client = new ProofFlowVaultClient({ rpcUrl: xLayerRpcUrl, expectedChainId: xLayerChainId, vaultAddress: vaultAddress as `0x${string}` });
+      const client = new ProofFlowVaultClient({ rpcUrl: xLayerRpcUrl, expectedChainId: xLayerChainId, vaultAddress: vaultAddress as `0x${string}`, timeoutMs: RPC_TIMEOUT_MS });
       const snapshot = await client.assertMatchesAgreement({ payer: agreement.payer, recipient: agreement.recipient, amountBaseUnits: agreement.policy.releaseAmountBaseUnits, policyHash: agreement.policyHash });
       return c.json({ data: { agreementId: id, network: { chainId: snapshot ? xLayerChainId : 0, rpcUrl: xLayerRpcUrl }, vault: { ...snapshot, amount: snapshot.amount.toString(), deadline: snapshot.deadline.toString(), balance: snapshot.balance.toString() }, transactions: { fund: client.previewFund(snapshot.amount), commitEvidence: repository.getManifest(id) ? client.previewCommitEvidence(repository.getManifest(id)!.manifestHash as `0x${string}`) : null, release: client.previewRelease() } } });
     } catch {
@@ -259,7 +260,10 @@ export function createApp(repository: ProofFlowRepository = new MemoryRepository
     const body = z.object({ idempotencyKey: z.string().min(8).max(128) }).safeParse(await c.req.json().catch(() => null));
     if (!body.success) return c.json({ error: { code: "VALIDATION_ERROR", message: "Settlement intent is invalid.", fields: body.error.flatten().fieldErrors } }, 400);
     const existing = repository.getSettlementIntentByIdempotencyKey(body.data.idempotencyKey);
-    if (existing) return c.json({ data: existing, idempotent: true });
+    if (existing) {
+      if (existing.agreementId !== id) return c.json({ error: { code: "IDEMPOTENCY_KEY_CONFLICT", message: "Idempotency key is already bound to another agreement." } }, 409);
+      return c.json({ data: existing, idempotent: true });
+    }
     const now = new Date().toISOString();
     const intent = SettlementIntentSchema.parse({ id: `set_${crypto.randomUUID().replaceAll("-", "").slice(0, 16)}`, agreementId: id, idempotencyKey: body.data.idempotencyKey, amountBaseUnits: agreement.policy.releaseAmountBaseUnits, recipient: agreement.recipient, tokenAddress: agreement.tokenAddress, policyHash: agreement.policyHash, evidenceManifestHash: manifest.manifestHash, state: "CREATED", createdAt: now, updatedAt: now });
     repository.saveSettlementIntent(intent);
@@ -306,10 +310,11 @@ export function createApp(repository: ProofFlowRepository = new MemoryRepository
     const agreement = repository.getAgreement(intent.agreementId);
     if (!agreement) return c.json({ error: { code: "NOT_FOUND", message: "Agreement not found." } }, 404);
     try {
-      const client = new XLayerClient({ rpcUrl: xLayerRpcUrl, expectedChainId: xLayerChainId });
-      const receipt = await client.getTransactionReceipt(body.data.transactionHash as `0x${string}`);
-      if (!receipt) return c.json({ data: { intent, status: "PENDING", receipt: null } });
+      const client = new XLayerClient({ rpcUrl: xLayerRpcUrl, expectedChainId: xLayerChainId, timeoutMs: RPC_TIMEOUT_MS });
       if (!vaultAddress || !/^0x[a-fA-F0-9]{40}$/.test(vaultAddress)) return c.json({ error: { code: "VAULT_NOT_CONFIGURED", message: "ProofFlow vault address is not configured." } }, 503);
+      const verifier = new ProofFlowVaultClient({ rpcUrl: xLayerRpcUrl, expectedChainId: xLayerChainId, vaultAddress: vaultAddress as `0x${string}`, timeoutMs: RPC_TIMEOUT_MS });
+      const receipt = await verifier.getTransactionReceipt(body.data.transactionHash as `0x${string}`);
+      if (!receipt) return c.json({ data: { intent, status: "PENDING", receipt: null } });
       if (!receipt.to || receipt.to.toLowerCase() !== vaultAddress.toLowerCase()) return c.json({ error: { code: "RECEIPT_TARGET_MISMATCH", message: "Receipt target does not match the configured ProofFlow vault." } }, 409);
       if (receipt.from.toLowerCase() !== agreement.payer.toLowerCase()) return c.json({ error: { code: "RECEIPT_SENDER_MISMATCH", message: "Receipt sender does not match the agreement payer." } }, 409);
       if (intent.state === "CONFIRMED" || intent.state === "FAILED") {

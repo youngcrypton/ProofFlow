@@ -70,6 +70,16 @@ describe("ProofFlow API", () => {
     expect(events.map((event) => event.sequence)).toEqual([1, 2, 3, 4, 5, 6]);
     expect(events[1]?.previousEventHash).toBe(events[0]?.eventHash);
   });
+  it("rejects an idempotency key reused for another agreement", async () => {
+    const first = await createFundedReadyAgreement();
+    const second = await createFundedReadyAgreement();
+    const key = "shared-key-001";
+    expect((await request(`/api/v1/agreements/${first}/settlement-intents`, json({ idempotencyKey: key }))).status).toBe(201);
+    const conflict = await request(`/api/v1/agreements/${second}/settlement-intents`, json({ idempotencyKey: key }));
+    expect(conflict.status).toBe(409);
+    expect((await conflict.json() as { error: { code: string } }).error.code).toBe("IDEMPOTENCY_KEY_CONFLICT");
+  });
+
   it("returns an explicit offline state instead of fabricated demo data", async () => {
     const response = await request("/api/v1/agreements");
     expect(response.status).toBe(200);

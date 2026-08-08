@@ -15,6 +15,7 @@ export interface XLayerClientOptions {
   rpcUrl: string;
   expectedChainId?: number;
   fetcher?: (input: URL | RequestInfo, init?: RequestInit) => Promise<Response>;
+  timeoutMs?: number;
 }
 
 export interface XLayerStatus {
@@ -55,16 +56,32 @@ export class XLayerClient {
   private readonly rpcUrl: string;
   private readonly expectedChainId: number;
   private readonly fetcher: (input: URL | RequestInfo, init?: RequestInit) => Promise<Response>;
+  private readonly timeoutMs: number;
 
   constructor(options: XLayerClientOptions) {
     if (!options.rpcUrl.startsWith("https://")) throw new Error("X Layer RPC must use HTTPS");
     this.rpcUrl = options.rpcUrl;
     this.expectedChainId = options.expectedChainId ?? X_LAYER_TESTNET_CHAIN_ID;
     this.fetcher = options.fetcher ?? fetch;
+    this.timeoutMs = options.timeoutMs ?? 8_000;
+    if (!Number.isInteger(this.timeoutMs) || this.timeoutMs < 100 || this.timeoutMs > 60_000) throw new Error("X Layer RPC timeout must be between 100ms and 60s");
+  }
+
+  private async fetchWithTimeout(init: RequestInit): Promise<Response> {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), this.timeoutMs);
+    try {
+      return await this.fetcher(this.rpcUrl, { ...init, signal: controller.signal });
+    } catch (error) {
+      if (error instanceof Error && error.name === "AbortError") throw new Error("X Layer RPC request timed out");
+      throw error;
+    } finally {
+      clearTimeout(timer);
+    }
   }
 
   async request(method: string, params: unknown[] = []): Promise<string> {
-    const response = await this.fetcher(this.rpcUrl, {
+    const response = await this.fetchWithTimeout({
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params })
@@ -101,7 +118,7 @@ export class XLayerClient {
   }
 
   async requestNullable(method: string, params: unknown[] = []): Promise<unknown | null> {
-    const response = await this.fetcher(this.rpcUrl, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }) });
+    const response = await this.fetchWithTimeout({ method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }) });
     if (!response.ok) throw new Error(`X Layer RPC returned HTTP ${response.status}`);
     const parsed = z.object({ jsonrpc: z.literal("2.0"), id: z.number().int(), result: z.unknown().nullable().optional(), error: z.object({ code: z.number().int(), message: z.string() }).optional() }).parse(await response.json());
     if (parsed.error) throw new Error(`X Layer RPC ${parsed.error.code}: ${parsed.error.message}`);
