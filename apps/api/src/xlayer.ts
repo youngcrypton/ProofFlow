@@ -23,6 +23,22 @@ export interface XLayerStatus {
   blockNumber: bigint;
 }
 
+export interface TransactionReceipt {
+  transactionHash: `0x${string}`;
+  blockNumber: bigint;
+  status: "0x1" | "0x0";
+  from: `0x${string}`;
+  to: `0x${string}` | null;
+}
+
+const TransactionReceiptSchema = z.object({
+  transactionHash: z.string().regex(/^0x[0-9a-f]{64}$/i),
+  blockNumber: z.string(),
+  status: z.enum(["0x1", "0x0"]),
+  from: z.string().regex(/^0x[0-9a-f]{40}$/i),
+  to: z.string().regex(/^0x[0-9a-f]{40}$/i).nullable()
+});
+
 function hexToNumber(value: string, field: string): number {
   if (!/^0x[0-9a-f]+$/i.test(value)) throw new Error(`Invalid ${field} response`);
   return Number.parseInt(value.slice(2), 16);
@@ -64,6 +80,22 @@ export class XLayerClient {
 
   async getBlockNumber(): Promise<bigint> {
     return hexToBigInt(await this.request("eth_blockNumber"), "block number");
+  }
+
+  async getTransactionReceipt(transactionHash: `0x${string}`): Promise<TransactionReceipt | null> {
+    if (!/^0x[0-9a-f]{64}$/i.test(transactionHash)) throw new Error("Invalid transaction hash");
+    const result = await this.requestNullable("eth_getTransactionReceipt", [transactionHash]);
+    if (result === null) return null;
+    const receipt = TransactionReceiptSchema.parse(result);
+    return { transactionHash: receipt.transactionHash as `0x${string}`, blockNumber: hexToBigInt(receipt.blockNumber, "receipt block number"), status: receipt.status, from: receipt.from as `0x${string}`, to: receipt.to as `0x${string}` | null };
+  }
+
+  async requestNullable(method: string, params: unknown[] = []): Promise<unknown | null> {
+    const response = await this.fetcher(this.rpcUrl, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }) });
+    if (!response.ok) throw new Error(`X Layer RPC returned HTTP ${response.status}`);
+    const parsed = z.object({ jsonrpc: z.literal("2.0"), id: z.number().int(), result: z.unknown().nullable().optional(), error: z.object({ code: z.number().int(), message: z.string() }).optional() }).parse(await response.json());
+    if (parsed.error) throw new Error(`X Layer RPC ${parsed.error.code}: ${parsed.error.message}`);
+    return parsed.result ?? null;
   }
 
   async assertExpectedNetwork(): Promise<number> {

@@ -75,6 +75,10 @@ export class SqliteRepository implements ProofFlowRepository {
     return row ? SettlementIntentSchema.parse(JSON.parse(row.payload)) : undefined;
   }
 
+  listSettlementIntents(): SettlementIntent[] {
+    return this.db.query("SELECT payload FROM settlement_intents ORDER BY rowid ASC").all().map((row) => SettlementIntentSchema.parse(JSON.parse((row as { payload: string }).payload)));
+  }
+
   saveSettlementIntent(intent: SettlementIntent): void {
     this.db.query("INSERT INTO settlement_intents (id, idempotency_key, payload) VALUES (?1, ?2, ?3) ON CONFLICT(id) DO UPDATE SET payload = excluded.payload").run(intent.id, intent.idempotencyKey, JSON.stringify(intent));
   }

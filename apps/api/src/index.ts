@@ -226,6 +226,29 @@ export function createApp(repository: ProofFlowRepository = new MemoryRepository
     return c.json({ data: { intent: updated, authorization: body.data } });
   });
 
+  app.post("/api/v1/settlement-intents/:id/reconcile", async (c) => {
+    const intent = repository.getSettlementIntent(c.req.param("id"));
+    if (!intent) return c.json({ error: { code: "NOT_FOUND", message: "Settlement intent not found." } }, 404);
+    const body = z.object({ transactionHash: z.string().regex(/^0x[a-fA-F0-9]{64}$/) }).safeParse(await c.req.json().catch(() => null));
+    if (!body.success) return c.json({ error: { code: "VALIDATION_ERROR", message: "Transaction hash is invalid.", fields: body.error.flatten().fieldErrors } }, 400);
+    const agreement = repository.getAgreement(intent.agreementId);
+    if (!agreement) return c.json({ error: { code: "NOT_FOUND", message: "Agreement not found." } }, 404);
+    try {
+      const client = new XLayerClient({ rpcUrl: process.env.XLAYER_RPC_URL ?? "https://testrpc.xlayer.tech/terigon", expectedChainId: Number(process.env.XLAYER_CHAIN_ID ?? 1952) });
+      const receipt = await client.getTransactionReceipt(body.data.transactionHash as `0x${string}`);
+      if (!receipt) return c.json({ data: { intent, status: "PENDING", receipt: null } });
+      if (!receipt.to || receipt.to.toLowerCase() !== (process.env.PROOFFLOW_VAULT_ADDRESS ?? "").toLowerCase()) return c.json({ error: { code: "RECEIPT_TARGET_MISMATCH", message: "Receipt target does not match the configured ProofFlow vault." } }, 409);
+      const now = new Date().toISOString();
+      const nextState = receipt.status === "0x1" ? "CONFIRMED" : "FAILED";
+      const updated = SettlementIntentSchema.parse({ ...intent, state: nextState, updatedAt: now });
+      repository.saveSettlementIntent(updated);
+      repository.appendAuditEvent({ aggregateType: "SETTLEMENT_INTENT", aggregateId: intent.agreementId, eventType: nextState === "CONFIRMED" ? "SETTLEMENT_CONFIRMED" : "SETTLEMENT_FAILED", actor: "xlayer-reconciler", occurredAt: now, correlationId: intent.id }, { intentId: intent.id, transactionHash: receipt.transactionHash, blockNumber: receipt.blockNumber.toString(), status: receipt.status });
+      return c.json({ data: { intent: updated, status: nextState, receipt: { ...receipt, blockNumber: receipt.blockNumber.toString() } } });
+    } catch (error) {
+      return c.json({ error: { code: "RECONCILIATION_FAILED", message: error instanceof Error ? error.message : "Could not reconcile transaction." } }, 503);
+    }
+  });
+
   app.get("/api/v1/settlement-intents/:id", (c) => {
     const intent = repository.getSettlementIntent(c.req.param("id"));
     if (!intent) return c.json({ error: { code: "NOT_FOUND", message: "Settlement intent not found." } }, 404);

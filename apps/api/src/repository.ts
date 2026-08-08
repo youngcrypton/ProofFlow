@@ -13,6 +13,7 @@ export interface ProofFlowRepository {
   getSettlementIntent(id: string): SettlementIntent | undefined;
   getSettlementIntentByIdempotencyKey(key: string): SettlementIntent | undefined;
   getSettlementIntentByAgreementId(agreementId: string): SettlementIntent | undefined;
+  listSettlementIntents(): SettlementIntent[];
   saveSettlementIntent(intent: SettlementIntent): void;
   listAuditEvents(aggregateId: string): AuditEvent[];
   appendAuditEvent(input: AuditEventInput, payload: unknown): AuditEvent;

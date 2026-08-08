@@ -68,6 +68,10 @@ export class MemoryRepository implements ProofFlowRepository {
     return intent ? copy(intent) : undefined;
   }
 
+  listSettlementIntents(): SettlementIntent[] {
+    return [...this.settlementIntents.values()].map(copy);
+  }
+
   saveSettlementIntent(intent: SettlementIntent): void {
     this.settlementIntents.set(intent.id, copy(intent));
   }
