@@ -16,6 +16,7 @@ type ChainPreview = { agreementId: string; network: { chainId: number; rpcUrl: s
 type AgreementDetail = { agreement: Agreement; manifest: EvidenceManifest | null; reviewRun: ReviewRun | null; decision: PolicyDecision | null; audit: AuditEvent[]; chain: ChainPreview | null; chainError: string | null };
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL ?? "http://localhost:8787";
+const XLAYER_TESTNET_CHAIN_ID = 1952;
 const ZERO_HASH = `0x${"0".repeat(64)}`;
 const ADDRESS_A = "0x0000000000000000000000000000000000000001";
 const ADDRESS_B = "0x0000000000000000000000000000000000000002";
@@ -55,10 +56,10 @@ function App() {
   const [detailLoading, setDetailLoading] = useState(false);
   const [walletAddress, setWalletAddress] = useState<string | null>(null);
   const [walletChainId, setWalletChainId] = useState<number | null>(null);
+  const [walletProvider, setWalletProvider] = useState<{ request: (args: { method: string; params?: unknown[] }) => Promise<unknown>; on?: (event: string, handler: (...args: unknown[]) => void) => void; removeListener?: (event: string, handler: (...args: unknown[]) => void) => void } | null>(null);
   const [walletBusy, setWalletBusy] = useState(false);
   const [walletError, setWalletError] = useState<string | null>(null);
   const [notice, setNotice] = useState<{ kind: "info" | "success" | "danger"; text: string } | null>(null);
-  const [demo, setDemo] = useState(false);
   const [resetting, setResetting] = useState(false);
 
   const loadAgreements = useCallback(async () => {
@@ -66,12 +67,10 @@ function App() {
     try {
       const result = await api<Agreement[]>("/api/v1/agreements");
       setAgreements(result);
-      setDemo(false);
       setSelectedId((current) => current && result.some((item) => item.id === current) ? current : result[0]?.id ?? null);
     } catch (error) {
       setNotice({ kind: "danger", text: "Live workspace unavailable. Check the API connection and retry." });
       setAgreements([]);
-      setDemo(false);
       setSelectedId(null);
     } finally { setLoading(false); }
   }, []);
@@ -84,7 +83,6 @@ function App() {
   const loadDetail = useCallback(async (id: string) => {
     setDetailLoading(true);
     try {
-      if (id === DEMO_AGREEMENT.id) { setDetail({ agreement: DEMO_AGREEMENT, manifest: DEMO_MANIFEST, reviewRun: DEMO_REVIEW, decision: DEMO_DECISION, audit: demoAudit(), chain: null, chainError: "Vault address is not configured for this demo workspace." }); return; }
       const agreement = await api<Agreement>(`/api/v1/agreements/${id}`);
       const [manifest, reviewRun, audit] = await Promise.all([api<EvidenceManifest>(`/api/v1/agreements/${id}/evidence`).catch(() => null), api<ReviewRun>(`/api/v1/agreements/${id}/reviews/latest`).catch(() => null), api<AuditEvent[]>(`/api/v1/agreements/${id}/audit`)]);
       let chain: ChainPreview | null = null; let chainError: string | null = null;
@@ -92,9 +90,21 @@ function App() {
       setDetail({ agreement, manifest, reviewRun, decision: null, audit, chain, chainError });
     } catch (error) { setNotice({ kind: "danger", text: error instanceof Error ? error.message : "Agreement could not be loaded." }); }
     finally { setDetailLoading(false); }
-  }, [demo]);
+  }, []);
 
   useEffect(() => { void loadAgreements(); void loadNetwork(); }, [loadAgreements, loadNetwork]);
+  useEffect(() => {
+    const provider = (window as Window & { ethereum?: typeof walletProvider }).ethereum ?? null;
+    if (!provider) return;
+    const onAccountsChanged = (...args: unknown[]) => { const accounts = (args[0] as string[] | undefined) ?? []; setWalletAddress(accounts[0] ?? null); if (!accounts[0]) setWalletChainId(null); };
+    const onChainChanged = (...args: unknown[]) => { const value = args[0]; const chainId = typeof value === "string" ? Number.parseInt(value, 16) : null; setWalletChainId(chainId); };
+    setWalletProvider(provider);
+    void provider.request({ method: "eth_accounts" }).then((value) => onAccountsChanged(value));
+    void provider.request({ method: "eth_chainId" }).then((value) => onChainChanged(value));
+    provider.on?.("accountsChanged", onAccountsChanged);
+    provider.on?.("chainChanged", onChainChanged);
+    return () => { provider.removeListener?.("accountsChanged", onAccountsChanged); provider.removeListener?.("chainChanged", onChainChanged); };
+  }, []);
   useEffect(() => { if (selectedId) void loadDetail(selectedId); }, [selectedId, loadDetail]);
 
   const selected = detail?.agreement ?? agreements.find((item) => item.id === selectedId) ?? null;
@@ -111,7 +121,7 @@ function App() {
   }
   async function connectWallet() {
     setWalletError(null);
-    const provider = (window as Window & { ethereum?: { request: (args: { method: string; params?: unknown[] }) => Promise<unknown> } }).ethereum;
+    const provider = walletProvider ?? (window as Window & { ethereum?: typeof walletProvider }).ethereum;
     if (!provider) { setWalletError("No browser wallet detected. Install a wallet such as MetaMask, then try again."); return; }
     try {
       const accounts = await provider.request({ method: "eth_requestAccounts" }) as string[];
@@ -123,7 +133,7 @@ function App() {
   }
 
   async function authorizeRelease(agreementId: string) {
-    const provider = (window as Window & { ethereum?: { request: (args: { method: string; params?: unknown[] }) => Promise<unknown> } }).ethereum;
+    const provider = walletProvider ?? (window as Window & { ethereum?: typeof walletProvider }).ethereum;
     if (!provider) { setWalletError("Connect a browser wallet before authorizing settlement."); return; }
     if (!walletAddress) { await connectWallet(); return; }
     setWalletBusy(true); setWalletError(null);
@@ -131,7 +141,7 @@ function App() {
       const intentResponse = await api<SettlementIntent>(`/api/v1/agreements/${agreementId}/settlement-intent`);
       const previewResponse = await api<{ transactions: { release: { to: string; value: string | bigint; data: string } } }>(`/api/v1/agreements/${agreementId}/chain-preview`);
       const tx = previewResponse.transactions.release;
-      const expectedChainId = Number(import.meta.env.VITE_XLAYER_CHAIN_ID ?? 1952);
+      const expectedChainId = Number(import.meta.env.VITE_XLAYER_CHAIN_ID ?? XLAYER_TESTNET_CHAIN_ID);
       const chainHex = await provider.request({ method: "eth_chainId" }) as string;
       const chainId = Number.parseInt(chainHex, 16);
       setWalletChainId(chainId);
@@ -146,7 +156,7 @@ function App() {
 
   async function simulate(action: "fund" | "review" | "release") {
     if (action === "release") { if (selectedId) await authorizeRelease(selectedId); return; }
-    if (!selectedId || demo) { setNotice({ kind: "info", text: "Demo data is read-only. Connect the API and configure a vault to run live actions." }); return; }
+    if (!selectedId) return;
     const paths: Record<"fund" | "review", [string, RequestInit]> = { fund: [`/api/v1/agreements/${selectedId}/fund`, { method: "POST" }], review: [`/api/v1/agreements/${selectedId}/review`, { method: "POST", body: JSON.stringify({ evidenceText: "Evidence received for the milestone." }) } ] };
     const path = paths[action];
     if (!path) return;
@@ -156,13 +166,13 @@ function App() {
   return <div className="app-shell">
     <Sidebar selected={selected} network={statusLabel} walletAddress={walletAddress} onConnect={() => void connectWallet()} onRefresh={refresh} />
     <main className="main-content">
-      <header className="topbar"><div><div className="breadcrumb">Workspace / <strong>Trust operations</strong></div><h1>Good evening, <em>operator.</em></h1></div><div className="topbar-actions"><button className="icon-button" aria-label="Refresh data" onClick={() => void refresh()}>↻</button><div className="network-status"><span className={network ? "status-dot online" : "status-dot"} />{statusLabel}<small>{network ? `Block ${network.blockNumber}` : networkError ?? "Checking RPC"}</small></div><div className="wallet-chip"><span>0x0000...0001</span><b>Buyer</b></div></div></header>
+      <header className="topbar"><div><div className="breadcrumb">Workspace / <strong>Trust operations</strong></div><h1>Good evening, <em>operator.</em></h1></div><div className="topbar-actions"><button className="icon-button" aria-label="Refresh data" onClick={() => void refresh()}>↻</button><div className="network-status"><span className={network ? "status-dot online" : "status-dot"} />{statusLabel}<small>{network ? `Block ${network.blockNumber}` : networkError ?? "Checking RPC"}</small></div><div className="wallet-chip"><span>{walletAddress ? shortAddress(walletAddress) : "No wallet"}</span><b>{walletChainId === XLAYER_TESTNET_CHAIN_ID ? "X Layer testnet" : walletChainId ? "Wrong network" : "Read-only"}</b></div></div></header>
       {notice && <div className={`inline-banner ${notice.kind}`} role="status"><span>{notice.kind === "danger" ? "!" : notice.kind === "success" ? "✓" : "i"}</span><p>{notice.text}</p><button className="banner-close" aria-label="Dismiss notification" onClick={() => setNotice(null)}>×</button></div>}
       <section className="page-heading"><div><div className="eyebrow">Trust execution console</div><h2>Overview</h2><p>Evidence, policy, and settlement in one accountable loop.</p></div><div className="heading-actions"><button className="button secondary" disabled={resetting} onClick={() => void resetDemo()}>{resetting ? "Resetting…" : "Reset demo"}</button><button className="button primary" disabled onClick={() => undefined}>+ Create agreement</button></div></section>
       <section className="metric-grid"><Metric label="Active agreements" value={String(agreements.length)} detail="Visible to this workspace" /><Metric label="Awaiting your action" value={String(awaiting)} detail="Review, fund, or release" tone={awaiting > 0 ? "lime" : ""} /><Metric label="In escrow" value={`${formatUnits(escrow)} XLAY`} detail="Unsettled agreement value" tone="dark" /><Metric label="Settled this period" value="—" detail="No fabricated comparison" /></section>
       <section className="dashboard-grid"><div className="panel priority-panel"><PanelHeading title="Priority queue" kicker="Next valid action" /><div className="queue-list">{loading ? <SkeletonRows /> : agreements.length === 0 ? <EmptyState title="Your trust queue is clear." copy="Create an agreement to turn a real-world commitment into a verifiable settlement." /> : agreements.map((agreement) => <QueueRow key={agreement.id} agreement={agreement} selected={agreement.id === selectedId} onClick={() => setSelectedId(agreement.id)} />)}</div></div><div className="panel network-panel"><PanelHeading title="Network health" kicker="Observed now" /><div className="network-hero"><div className="network-orbit"><span>×</span></div><div><strong>{network ? "Connected" : "Unavailable"}</strong><p>{network ? `X Layer ${network.chainId === 1952 ? "testnet" : "mainnet"}` : networkError ?? "RPC status is being checked."}</p></div></div><div className="network-detail"><span>Chain ID</span><code>{network?.chainId ?? "—"}</code><span>Latest block</span><code>{network?.blockNumber ?? "—"}</code></div><button className="text-button" onClick={() => void loadNetwork()}>Refresh RPC status ↻</button></div></section>
       <section className="panel agreement-panel"><PanelHeading title="Agreements" kicker={`${agreements.length} visible`} action={<span className="table-scope">Live workspace</span>} /><div className="agreement-table"><div className="table-head"><span>Agreement</span><span>Counterparty</span><span>Amount</span><span>State</span><span>Updated</span></div>{agreements.map((agreement) => <AgreementRow key={agreement.id} agreement={agreement} selected={agreement.id === selectedId} onClick={() => setSelectedId(agreement.id)} />)}</div></section>
-      {selected && <DetailPanel detail={detail} loading={detailLoading} onAction={simulate} demo={demo} walletAddress={walletAddress} walletBusy={walletBusy} walletError={walletError} onConnect={() => void connectWallet()} />}
+      {selected && <DetailPanel detail={detail} loading={detailLoading} onAction={simulate} walletAddress={walletAddress} walletBusy={walletBusy} walletError={walletError} onConnect={() => void connectWallet()} />}
     </main>
   </div>;
 }
@@ -172,7 +182,7 @@ function Metric({ label, value, detail, tone = "" }: { label: string; value: str
 function PanelHeading({ title, kicker, action }: { title: string; kicker: string; action?: ReactNode }) { return <div className="panel-heading"><div><span>{kicker}</span><h3>{title}</h3></div>{action}</div>; }
 function QueueRow({ agreement, selected, onClick }: { agreement: Agreement; selected: boolean; onClick: () => void }) { return <button className={`queue-row ${selected ? "selected" : ""}`} onClick={onClick}><span className={`state-mark ${stateTone(agreement.state)}`}>{stateIcon(agreement.state)}</span><span className="queue-main"><b>{agreement.title}</b><small>{agreement.id}</small></span><span className="queue-action">{nextAction(agreement.state)}</span><span className="queue-amount">{formatUnits(agreement.amountBaseUnits)} XLAY</span><span className="queue-date">{relativeTime(agreement.updatedAt)}</span></button>; }
 function AgreementRow({ agreement, selected, onClick }: { agreement: Agreement; selected: boolean; onClick: () => void }) { return <button className={`table-row ${selected ? "selected" : ""}`} onClick={onClick}><span><b>{agreement.title}</b><small>{agreement.id}</small></span><span className="mono">{shortAddress(agreement.recipient)}</span><span className="numeric">{formatUnits(agreement.amountBaseUnits)} XLAY</span><StateBadge state={agreement.state} /><span className="mono">{relativeTime(agreement.updatedAt)}</span></button>; }
-function DetailPanel({ detail, loading, onAction, demo, walletAddress, walletBusy, walletError, onConnect }: { detail: AgreementDetail | null; loading: boolean; onAction: (action: "fund" | "review" | "release") => void; demo: boolean; walletAddress: string | null; walletBusy: boolean; walletError: string | null; onConnect: () => void }) { const agreement = detail?.agreement; if (!agreement) return <section className="panel detail-panel"><SkeletonRows /></section>; const review = detail?.reviewRun; const observation = review?.observation; return <section className="detail-panel"><div className="detail-header"><div><span className="eyebrow">Agreement command center · {agreement.id}</span><h2>{agreement.title}</h2><p>{agreement.description}</p></div><StateBadge state={agreement.state} /></div>{detail?.chainError && <div className="chain-warning"><span>!</span><div><b>Vault status is not available</b><p>{detail.chainError}</p><small>Live transaction previews appear after the vault address is configured.</small></div></div>}<div className="detail-grid"><div><section className="detail-card state-banner"><span className={`state-mark large ${stateTone(agreement.state)}`}>{stateIcon(agreement.state)}</span><div><span className="eyebrow">Current state</span><h3>{stateTitle(agreement.state)}</h3><p>{stateCopy(agreement.state)}</p></div><button className="button primary action-button" disabled={loading || (demo && agreement.state !== "READY_TO_RELEASE")} onClick={() => void onAction(agreement.state === "AWAITING_FUNDING" ? "fund" : agreement.state === "EVIDENCE_SUBMITTED" ? "review" : "release")}>{nextAction(agreement.state)}</button></section><section className="detail-card"><SectionTitle title="Lifecycle" kicker="Agreement state" /><Lifecycle state={agreement.state} /></section><section className="detail-card"><SectionTitle title="Evidence and review" kicker="AI observation · deterministic gate" />{detail?.manifest ? <EvidenceReview manifest={detail.manifest} review={review} observation={observation} decision={detail.decision} /> : <EmptyState title="No evidence manifest" copy="Evidence has not been submitted for this agreement." />}</section><section className="detail-card"><SectionTitle title="Audit trail" kicker="Append-only integrity" /><AuditTrail events={detail?.audit ?? []} /></section></div><aside className="detail-sidebar"><section className="detail-card terms-card"><SectionTitle title="Terms" kicker="Immutable agreement" /><InfoRow label="Amount" value={`${formatUnits(agreement.amountBaseUnits)} XLAY`} /><InfoRow label="Deadline" value={formatDate(agreement.deadline)} /><InfoRow label="Payer" value={shortAddress(agreement.payer)} mono /><InfoRow label="Recipient" value={shortAddress(agreement.recipient)} mono /><InfoRow label="Policy" value={agreement.policy.version} /><InfoRow label="Policy hash" value={shortHash(agreement.policyHash)} mono /></section><section className="detail-card"><SectionTitle title="Vault status" kicker="X Layer settlement" />{detail?.chain ? <VaultCard chain={detail.chain} walletAddress={walletAddress} walletBusy={walletBusy} walletError={walletError} onConnect={onConnect} /> : <div className="not-configured"><span>◌</span><b>Awaiting vault connection</b><p>Configure <code>PROOFFLOW_VAULT_ADDRESS</code> to verify the onchain terms and preview safe transactions.</p></div>}</section></aside></div></section>; }
+function DetailPanel({ detail, loading, onAction, walletAddress, walletBusy, walletError, onConnect }: { detail: AgreementDetail | null; loading: boolean; onAction: (action: "fund" | "review" | "release") => void; walletAddress: string | null; walletBusy: boolean; walletError: string | null; onConnect: () => void }) { const agreement = detail?.agreement; if (!agreement) return <section className="panel detail-panel"><SkeletonRows /></section>; const review = detail?.reviewRun; const observation = review?.observation; return <section className="detail-panel"><div className="detail-header"><div><span className="eyebrow">Agreement command center · {agreement.id}</span><h2>{agreement.title}</h2><p>{agreement.description}</p></div><StateBadge state={agreement.state} /></div>{detail?.chainError && <div className="chain-warning"><span>!</span><div><b>Vault status is not available</b><p>{detail.chainError}</p><small>Live transaction previews appear after the vault address is configured.</small></div></div>}<div className="detail-grid"><div><section className="detail-card state-banner"><span className={`state-mark large ${stateTone(agreement.state)}`}>{stateIcon(agreement.state)}</span><div><span className="eyebrow">Current state</span><h3>{stateTitle(agreement.state)}</h3><p>{stateCopy(agreement.state)}</p></div><button className="button primary action-button" disabled={loading || !["AWAITING_FUNDING", "EVIDENCE_SUBMITTED", "READY_TO_RELEASE"].includes(agreement.state)} onClick={() => void onAction(agreement.state === "AWAITING_FUNDING" ? "fund" : agreement.state === "EVIDENCE_SUBMITTED" ? "review" : "release")}>{nextAction(agreement.state)}</button></section><section className="detail-card"><SectionTitle title="Lifecycle" kicker="Agreement state" /><Lifecycle state={agreement.state} /></section><section className="detail-card"><SectionTitle title="Evidence and review" kicker="AI observation · deterministic gate" />{detail?.manifest ? <EvidenceReview manifest={detail.manifest} review={review} observation={observation} decision={detail.decision} /> : <EmptyState title="No evidence manifest" copy="Evidence has not been submitted for this agreement." />}</section><section className="detail-card"><SectionTitle title="Audit trail" kicker="Append-only integrity" /><AuditTrail events={detail?.audit ?? []} /></section></div><aside className="detail-sidebar"><section className="detail-card terms-card"><SectionTitle title="Terms" kicker="Immutable agreement" /><InfoRow label="Amount" value={`${formatUnits(agreement.amountBaseUnits)} XLAY`} /><InfoRow label="Deadline" value={formatDate(agreement.deadline)} /><InfoRow label="Payer" value={shortAddress(agreement.payer)} mono /><InfoRow label="Recipient" value={shortAddress(agreement.recipient)} mono /><InfoRow label="Policy" value={agreement.policy.version} /><InfoRow label="Policy hash" value={shortHash(agreement.policyHash)} mono /></section><section className="detail-card"><SectionTitle title="Vault status" kicker="X Layer settlement" />{detail?.chain ? <VaultCard chain={detail.chain} walletAddress={walletAddress} walletBusy={walletBusy} walletError={walletError} onConnect={onConnect} /> : <div className="not-configured"><span>◌</span><b>Awaiting vault connection</b><p>Configure <code>PROOFFLOW_VAULT_ADDRESS</code> to verify the onchain terms and preview safe transactions.</p></div>}</section></aside></div></section>; }
 function SectionTitle({ title, kicker }: { title: string; kicker: string }) { return <div className="section-title"><span>{kicker}</span><h3>{title}</h3></div>; }
 function InfoRow({ label, value, mono = false }: { label: string; value: string; mono?: boolean }) { return <div className="info-row"><span>{label}</span><strong className={mono ? "mono" : ""}>{value}</strong></div>; }
 function StateBadge({ state }: { state: Agreement["state"] }) { return <span className={`state-badge ${stateTone(state)}`}><span>{stateIcon(state)}</span>{stateLabel(state)}</span>; }
