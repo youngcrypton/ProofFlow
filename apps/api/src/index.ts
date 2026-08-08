@@ -18,12 +18,16 @@ import type { ProofFlowRepository } from "./repository";
 import { ProofFlowVaultClient, XLayerClient } from "./xlayer";
 import { DeterministicDemoReviewer, runReview } from "./reviewer";
 
+const MAX_BODY_BYTES = 1_000_000;
+
 export function createApp(repository: ProofFlowRepository = new MemoryRepository()) {
   const app = new Hono();
   const allowedOrigin = process.env.PROOFFLOW_ALLOWED_ORIGIN ?? "http://localhost:5173";
   const xLayerRpcUrl = process.env.XLAYER_RPC_URL ?? "https://testrpc.xlayer.tech/terigon";
   const xLayerChainId = Number(process.env.XLAYER_CHAIN_ID ?? 1952);
   const vaultAddress = process.env.PROOFFLOW_VAULT_ADDRESS;
+  const requireAuth = process.env.NODE_ENV === "production" || process.env.PROOFFLOW_REQUIRE_AUTH === "true";
+  const apiToken = process.env.PROOFFLOW_API_TOKEN;
   app.use("*", cors({
     origin: allowedOrigin,
     allowMethods: ["GET", "POST", "OPTIONS"],
@@ -31,6 +35,17 @@ export function createApp(repository: ProofFlowRepository = new MemoryRepository
     maxAge: 600
   }));
   app.use("*", async (c, next) => {
+    if (requireAuth && c.req.method !== "GET" && c.req.method !== "OPTIONS") {
+      if (!apiToken || c.req.header("authorization") !== `Bearer ${apiToken}`) {
+        return c.json({ error: { code: "UNAUTHORIZED", message: "A valid API bearer token is required." } }, 401);
+      }
+    }
+    await next();
+  });
+
+  app.use("*", async (c, next) => {
+    const contentLength = Number(c.req.header("content-length") ?? 0);
+    if (contentLength > MAX_BODY_BYTES) return c.json({ error: { code: "PAYLOAD_TOO_LARGE", message: "Request body exceeds the 1 MB limit." } }, 413);
     const requestId = c.req.header("x-request-id")?.slice(0, 128) || crypto.randomUUID();
     c.header("x-request-id", requestId);
     await next();
@@ -40,6 +55,18 @@ export function createApp(repository: ProofFlowRepository = new MemoryRepository
     const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value));
     return `0x${[...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join("")}`;
   };
+
+  app.use("/api/v1/*", async (c, next) => {
+    const requireAuth = process.env.PROOFFLOW_REQUIRE_AUTH === "true" || process.env.NODE_ENV === "production";
+    if (requireAuth) {
+      const expected = process.env.PROOFFLOW_API_TOKEN;
+      const authorization = c.req.header("authorization");
+      if (!expected || !authorization?.startsWith("Bearer ") || authorization.slice(7) !== expected) {
+        return c.json({ error: { code: "UNAUTHORIZED", message: "A valid API bearer token is required." } }, 401);
+      }
+    }
+    await next();
+  });
 
   app.get("/health", (c) => c.json({ ok: true, service: "proofflow-api", timestamp: new Date().toISOString() }));
 
@@ -56,7 +83,7 @@ export function createApp(repository: ProofFlowRepository = new MemoryRepository
   app.get("/api/v1/agreements", (c) => c.json({ data: repository.listAgreements(), nextCursor: null }));
 
   app.post("/api/v1/demo/reset", async (c) => {
-    if (process.env.NODE_ENV === "production" && process.env.PROOFFLOW_ENABLE_DEMO_RESET !== "true") return c.json({ error: { code: "DEMO_RESET_DISABLED", message: "Demo reset is disabled in production." } }, 403);
+    if (process.env.NODE_ENV !== "test" && process.env.PROOFFLOW_ENABLE_DEMO_RESET !== "true") return c.json({ error: { code: "DEMO_RESET_DISABLED", message: "Demo reset is disabled outside explicitly enabled development mode." } }, 403);
     const now = new Date().toISOString();
     const agreement = AgreementSchema.parse({
       id: "agr_demo_001",
@@ -136,7 +163,16 @@ export function createApp(repository: ProofFlowRepository = new MemoryRepository
     return c.json({ data: updated });
   });
 
-  app.get("/api/v1/agreements/:id/audit", (c) => c.json({ data: repository.listAuditEvents(c.req.param("id")) }));
+  app.get("/api/v1/agreements/:id/audit", (c) => {
+    const events = repository.listAuditEvents(c.req.param("id"));
+    for (let index = 0; index < events.length; index += 1) {
+      const event = events[index];
+      if (!event) continue;
+      const previous = events[index - 1]?.eventHash ?? `0x${"0".repeat(64)}`;
+      if (event.sequence !== index + 1 || event.previousEventHash !== previous) return c.json({ error: { code: "AUDIT_CHAIN_INVALID", message: "Audit chain integrity verification failed." } }, 500);
+    }
+    return c.json({ data: events, integrity: { valid: true, eventCount: events.length } });
+  });
 
   app.post("/api/v1/agreements/:id/evidence", async (c) => {
     const id = c.req.param("id");
@@ -234,7 +270,16 @@ export function createApp(repository: ProofFlowRepository = new MemoryRepository
     if (body.data.chainId !== expectedChainId) return c.json({ error: { code: "WRONG_NETWORK", message: `Expected X Layer chain ${expectedChainId}.` } }, 409);
     if (body.data.walletAddress.toLowerCase() !== intent.recipient.toLowerCase() && body.data.walletAddress.toLowerCase() !== (repository.getAgreement(intent.agreementId)?.payer ?? "").toLowerCase()) return c.json({ error: { code: "UNAUTHORIZED_WALLET", message: "Wallet is not a party to this agreement." } }, 403);
     const now = new Date().toISOString();
-    const updated = SettlementIntentSchema.parse({ ...intent, state: "SUBMITTED", updatedAt: now });
+    if (!vaultAddress || !/^0x[a-fA-F0-9]{40}$/.test(vaultAddress)) return c.json({ error: { code: "VAULT_NOT_CONFIGURED", message: "ProofFlow vault address is not configured." } }, 503);
+    const agreement = repository.getAgreement(intent.agreementId);
+    if (!agreement) return c.json({ error: { code: "NOT_FOUND", message: "Agreement not found." } }, 404);
+    try {
+      const verifier = new ProofFlowVaultClient({ rpcUrl: xLayerRpcUrl, expectedChainId, vaultAddress: vaultAddress as `0x${string}` });
+      await verifier.verifyReleaseTransaction({ transactionHash: body.data.transactionHash as `0x${string}`, payer: agreement.payer, recipient: agreement.recipient, amountBaseUnits: intent.amountBaseUnits });
+    } catch (error) {
+      return c.json({ error: { code: "AUTHORIZATION_UNVERIFIED", message: error instanceof Error ? error.message : "Could not verify the authorized transaction." } }, 409);
+    }
+    const updated = SettlementIntentSchema.parse({ ...intent, transactionHash: body.data.transactionHash, authorizedBy: body.data.walletAddress, chainId: body.data.chainId, state: "SUBMITTED", updatedAt: now });
     repository.saveSettlementIntent(updated);
     repository.appendAuditEvent({ aggregateType: "SETTLEMENT_INTENT", aggregateId: intent.agreementId, eventType: "SETTLEMENT_AUTHORIZED", actor: body.data.walletAddress, occurredAt: now, correlationId: intent.id }, { intentId: intent.id, walletAddress: body.data.walletAddress, transactionHash: body.data.transactionHash, chainId: body.data.chainId });
     return c.json({ data: { intent: updated, authorization: body.data } });

@@ -222,6 +222,9 @@ export const SettlementIntentSchema = z.object({
   tokenAddress: EvmAddressSchema,
   policyHash: Hash32Schema,
   evidenceManifestHash: Hash32Schema,
+  transactionHash: Hash32Schema.optional(),
+  authorizedBy: EvmAddressSchema.optional(),
+  chainId: z.number().int().positive().optional(),
   state: z.enum(["CREATED", "AWAITING_AUTHORIZATION", "SUBMITTED", "CONFIRMED", "FAILED", "UNKNOWN"]),
   createdAt: IsoDateSchema,
   updatedAt: IsoDateSchema

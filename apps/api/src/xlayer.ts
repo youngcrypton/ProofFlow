@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { encodeFunctionData } from "viem";
+import { decodeFunctionData, encodeFunctionData, keccak256, toBytes } from "viem";
 
 export const X_LAYER_TESTNET_CHAIN_ID = 1952;
 export const X_LAYER_MAINNET_CHAIN_ID = 196;
@@ -29,6 +29,7 @@ export interface TransactionReceipt {
   status: "0x1" | "0x0";
   from: `0x${string}`;
   to: `0x${string}` | null;
+  logs: Array<{ address: `0x${string}`; topics: `0x${string}`[]; data: `0x${string}` }>;
 }
 
 const TransactionReceiptSchema = z.object({
@@ -36,7 +37,8 @@ const TransactionReceiptSchema = z.object({
   blockNumber: z.string(),
   status: z.enum(["0x1", "0x0"]),
   from: z.string().regex(/^0x[0-9a-f]{40}$/i),
-  to: z.string().regex(/^0x[0-9a-f]{40}$/i).nullable()
+  to: z.string().regex(/^0x[0-9a-f]{40}$/i).nullable(),
+  logs: z.array(z.object({ address: z.string().regex(/^0x[0-9a-f]{40}$/i), topics: z.array(z.string().regex(/^0x[0-9a-f]{64}$/i)), data: z.string().regex(/^0x[0-9a-f]*$/i) }))
 });
 
 function hexToNumber(value: string, field: string): number {
@@ -82,12 +84,20 @@ export class XLayerClient {
     return hexToBigInt(await this.request("eth_blockNumber"), "block number");
   }
 
+  async getTransaction(transactionHash: `0x${string}`): Promise<{ hash: `0x${string}`; from: `0x${string}`; to: `0x${string}` | null; input: `0x${string}`; value: bigint } | null> {
+    if (!/^0x[0-9a-f]{64}$/i.test(transactionHash)) throw new Error("Invalid transaction hash");
+    const result = await this.requestNullable("eth_getTransactionByHash", [transactionHash]);
+    if (result === null) return null;
+    const transaction = z.object({ hash: z.string().regex(/^0x[0-9a-f]{64}$/i), from: z.string().regex(/^0x[0-9a-f]{40}$/i), to: z.string().regex(/^0x[0-9a-f]{40}$/i).nullable(), input: z.string().regex(/^0x[0-9a-f]*$/i), value: z.string().regex(/^0x[0-9a-f]+$/i) }).parse(result);
+    return { hash: transaction.hash as `0x${string}`, from: transaction.from as `0x${string}`, to: transaction.to as `0x${string}` | null, input: transaction.input as `0x${string}`, value: BigInt(transaction.value) };
+  }
+
   async getTransactionReceipt(transactionHash: `0x${string}`): Promise<TransactionReceipt | null> {
     if (!/^0x[0-9a-f]{64}$/i.test(transactionHash)) throw new Error("Invalid transaction hash");
     const result = await this.requestNullable("eth_getTransactionReceipt", [transactionHash]);
     if (result === null) return null;
     const receipt = TransactionReceiptSchema.parse(result);
-    return { transactionHash: receipt.transactionHash as `0x${string}`, blockNumber: hexToBigInt(receipt.blockNumber, "receipt block number"), status: receipt.status, from: receipt.from as `0x${string}`, to: receipt.to as `0x${string}` | null };
+    return { transactionHash: receipt.transactionHash as `0x${string}`, blockNumber: hexToBigInt(receipt.blockNumber, "receipt block number"), status: receipt.status, from: receipt.from as `0x${string}`, to: receipt.to as `0x${string}` | null, logs: receipt.logs.map((log) => ({ address: log.address as `0x${string}`, topics: log.topics as `0x${string}`[], data: log.data as `0x${string}` })) };
   }
 
   async requestNullable(method: string, params: unknown[] = []): Promise<unknown | null> {
@@ -124,7 +134,8 @@ export const PROOFFLOW_VAULT_ABI = [
   { type: "function", name: "paused", stateMutability: "view", inputs: [], outputs: [{ type: "bool" }] },
   { type: "function", name: "commitEvidence", stateMutability: "nonpayable", inputs: [{ name: "evidenceHash_", type: "bytes32" }], outputs: [] },
   { type: "function", name: "release", stateMutability: "nonpayable", inputs: [], outputs: [] },
-  { type: "function", name: "fund", stateMutability: "payable", inputs: [], outputs: [] }
+  { type: "function", name: "fund", stateMutability: "payable", inputs: [], outputs: [] },
+  { type: "event", name: "Released", inputs: [{ name: "recipient", type: "address", indexed: true }, { name: "amount", type: "uint256", indexed: false }], anonymous: false }
 ] as const;
 
 export interface VaultSnapshot {
@@ -208,6 +219,29 @@ export class ProofFlowVaultClient extends XLayerClient {
 
   previewRelease(): VaultTransactionPreview {
     return { to: this.vaultAddress, value: 0n, data: encodeFunctionData({ abi: PROOFFLOW_VAULT_ABI, functionName: "release" }), method: "release" };
+  }
+
+
+  async verifyReleaseTransaction(input: { transactionHash: `0x${string}`; payer: string; recipient: string; amountBaseUnits: string }): Promise<{ receipt: TransactionReceipt; transaction: { hash: `0x${string}`; from: `0x${string}`; to: `0x${string}` | null; input: `0x${string}`; value: bigint } }> {
+    await this.assertExpectedNetwork();
+    const [transaction, receipt] = await Promise.all([this.getTransaction(input.transactionHash), this.getTransactionReceipt(input.transactionHash)]);
+    if (!transaction || !receipt) throw new Error("Transaction is not yet available on X Layer");
+    if (transaction.from.toLowerCase() !== input.payer.toLowerCase() || receipt.from.toLowerCase() !== input.payer.toLowerCase()) throw new Error("Transaction sender does not match agreement payer");
+    if (transaction.to?.toLowerCase() !== this.vaultAddress.toLowerCase() || receipt.to?.toLowerCase() !== this.vaultAddress.toLowerCase()) throw new Error("Transaction target does not match ProofFlow vault");
+    if (transaction.value !== 0n) throw new Error("Release transaction must not transfer native value");
+    const decoded = decodeFunctionData({ abi: PROOFFLOW_VAULT_ABI, data: transaction.input });
+    if (decoded.functionName !== "release") throw new Error("Transaction does not call vault release");
+    if (receipt.status !== "0x1") throw new Error("Release transaction failed on X Layer");
+    const releaseTopic = keccak256(toBytes("Released(address,uint256)"));
+    const event = receipt.logs.find((log) => log.address.toLowerCase() === this.vaultAddress.toLowerCase() && log.topics[0]?.toLowerCase() === releaseTopic.toLowerCase());
+    if (!event || event.topics.length < 2) throw new Error("Successful release event not found");
+    const recipientTopic = event.topics[1];
+    if (!recipientTopic) throw new Error("Release recipient event topic missing");
+    const releasedRecipient = `0x${recipientTopic.slice(-40)}`;
+    const releasedAmount = BigInt(event.data);
+    if (releasedRecipient.toLowerCase() !== input.recipient.toLowerCase()) throw new Error("Release recipient does not match agreement");
+    if (releasedAmount !== BigInt(input.amountBaseUnits)) throw new Error("Release amount does not match agreement");
+    return { receipt, transaction };
   }
 
   async assertMatchesAgreement(input: { payer: string; recipient: string; amountBaseUnits: string; policyHash: string }): Promise<VaultSnapshot> {

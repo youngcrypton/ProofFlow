@@ -79,8 +79,8 @@ describe("ProofFlow API", () => {
     const wrongNetwork = await request(`/api/v1/settlement-intents/${intent.id}/authorization`, json({ walletAddress: address("1"), transactionHash: `0x${"2".repeat(64)}`, chainId: 196 }));
     expect(wrongNetwork.status).toBe(409);
     const authorized = await request(`/api/v1/settlement-intents/${intent.id}/authorization`, json({ walletAddress: address("1"), transactionHash: `0x${"3".repeat(64)}`, chainId: 1952 }));
-    expect(authorized.status).toBe(200);
-    expect((await authorized.json() as { data: { intent: { state: string } } }).data.intent.state).toBe("SUBMITTED");
+    expect(authorized.status).toBe(503);
+    expect((await authorized.json() as { error: { code: string } }).error.code).toBe("VAULT_NOT_CONFIGURED");
   });
 
 
