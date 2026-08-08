@@ -18,7 +18,7 @@ import { MemoryRepository } from "./memory-repository";
 import type { ProofFlowRepository } from "./repository";
 import type { AuditEvent } from "@proofflow/domain";
 import { ProofFlowVaultClient, XLayerClient } from "./xlayer";
-import { DeterministicDemoReviewer, runReview } from "./reviewer";
+import { runReview, createReviewProvider } from "./reviewer";
 import { logStructured, Observability, routeLabel } from "./observability";
 import { EvidenceStore } from "./evidence-store";
 
@@ -154,7 +154,7 @@ export function createApp(repository: ProofFlowRepository = new MemoryRepository
       { type: "status_update", name: "site-status.json", mediaType: "application/json", sha256: "c".repeat(64), uri: "https://example.com/evidence/site-status.json" }
     ], manifestHash: `0x${"3".repeat(64)}` });
     repository.saveManifest(manifest);
-    const review = await runReview(new DeterministicDemoReviewer(), { agreementId: agreement.id, manifest, evidenceText: "Installation complete. Invoice total: 4.280 X Layer." });
+    const review = await runReview(createReviewProvider(), { agreementId: agreement.id, manifest, evidenceText: "Installation complete. Invoice total: 4.280 X Layer." });
     repository.saveReviewRun(review);
     repository.appendAuditEvent({ aggregateType: "AGREEMENT", aggregateId: agreement.id, eventType: "AGREEMENT_CREATED", actor: "demo-seed", occurredAt: now, correlationId: agreement.id }, { agreement });
     repository.appendAuditEvent({ aggregateType: "EVIDENCE", aggregateId: agreement.id, eventType: "EVIDENCE_SUBMITTED", actor: agreement.recipient, occurredAt: now, correlationId: agreement.id }, { manifestHash: manifest.manifestHash, itemCount: manifest.items.length });
@@ -337,7 +337,7 @@ export function createApp(repository: ProofFlowRepository = new MemoryRepository
     const body = z.object({ evidenceText: z.string().max(40_000).default("") }).safeParse(await c.req.json().catch(() => ({})));
     if (!body.success) return c.json({ error: { code: "VALIDATION_ERROR", message: "Review input is invalid.", fields: body.error.flatten().fieldErrors } }, 400);
     const reviewStartedAt = performance.now();
-    const reviewRun = await runReview(new DeterministicDemoReviewer(), { agreementId: id, manifest, evidenceText: body.data.evidenceText });
+    const reviewRun = await runReview(createReviewProvider(), { agreementId: id, manifest, evidenceText: body.data.evidenceText });
     observability.recordReview(reviewRun.status, performance.now() - reviewStartedAt);
     repository.saveReviewRun(reviewRun);
     const updated = AgreementSchema.parse({ ...agreement, state: reviewRun.status === "SUCCEEDED" ? JobState.REVIEWED : JobState.UNDER_REVIEW, updatedAt: reviewRun.completedAt ?? reviewRun.createdAt });

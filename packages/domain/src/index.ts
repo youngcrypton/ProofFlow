@@ -144,7 +144,9 @@ export type ReviewObservation = z.infer<typeof ReviewObservationSchema>;
 export const ReviewerProviderSchema = z.object({
   provider: z.string().min(1).max(80),
   model: z.string().min(1).max(160),
-  promptVersion: z.string().min(1).max(80)
+  modelVersion: z.string().min(1).max(160),
+  promptVersion: z.string().min(1).max(80),
+  promptHash: Hash32Schema
 });
 
 export const ReviewRunSchema = z.object({
