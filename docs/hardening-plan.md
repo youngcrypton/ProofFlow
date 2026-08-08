@@ -14,7 +14,7 @@ The repository currently passes:
 
 The current prototype has a coherent agreement lifecycle, durable SQLite runtime, deterministic review fixture, hashed audit events, wallet authorization previews, X Layer testnet receipt verification, request IDs, rate limiting, metrics, and a polished dashboard.
 
-The most important remaining risk is not visual. The policy-evaluation API still accepts caller-supplied review observations and manifest-integrity flags. A caller who can reach that route can submit a fabricated `PASS` observation and move an agreement toward settlement. The current evidence route stores a JSON manifest and external URI, not uploaded bytes; it therefore cannot yet enforce MIME sniffing, malware scanning, content-addressed storage, or secure retrieval.
+The most important remaining risk is not visual. The policy-evaluation API still accepts caller-supplied review observations and manifest-integrity flags. A caller who can reach that route can submit a fabricated `PASS` observation and move an agreement toward settlement. The JSON manifest route remains reference-only, but a separate multipart upload path now performs MIME checks, quarantine scanning, content-addressed local storage, and authorized retrieval. Managed object storage, retention, backups, and production scanner operations remain deployment blockers.
 
 ## Priority 0 — release blockers
 
@@ -31,7 +31,7 @@ These items must be complete before calling the system deployment-ready, even fo
 - Make evaluation idempotent for a given manifest hash and policy hash.
 - Add tests proving that fabricated client payloads cannot produce `PASS` or `READY_TO_RELEASE`.
 
-### 2. Implement controlled evidence ingestion
+### 2. Operate controlled evidence ingestion
 
 Keep the existing JSON manifest endpoint for compatibility, but clearly label it as a legacy/test fixture path. Add a separate multipart upload path:
 
@@ -143,7 +143,7 @@ The release command must run type checking, unit/integration tests, the producti
 
 1. Add typed startup configuration and fail-closed deployment checks.
 2. Make policy evaluation server-authoritative and atomic.
-3. Add evidence blob interfaces, quarantine storage, scanner adapter, and multipart upload tests.
+3. Operate the evidence blob interfaces, quarantine storage, scanner adapter, and multipart upload tests against managed production infrastructure.
 4. Add clean-blob promotion and authorized retrieval.
 5. Strengthen exact settlement receipt verification.
 6. Add persistence/recovery tests and operational backup documentation.

@@ -337,7 +337,9 @@ The API is intentionally small and lifecycle-oriented.
 | `GET` | `/api/v1/agreements` | List agreement projections |
 | `POST` | `/api/v1/agreements` | Create an agreement |
 | `GET` | `/api/v1/agreements/:id` | Read one agreement |
-| `POST` | `/api/v1/agreements/:id/evidence` | Commit evidence manifest |
+| `POST` | `/api/v1/agreements/:id/evidence` | Commit a JSON evidence manifest (legacy/test-fixture path) |
+| `POST` | `/api/v1/agreements/:id/evidence/upload` | Upload, MIME-check, scan, and content-address one evidence file |
+| `GET` | `/api/v1/evidence/blobs/:digest` | Retrieve a clean evidence blob by SHA-256 digest after manifest authorization |
 | `POST` | `/api/v1/agreements/:id/review` | Run the typed review boundary |
 | `POST` | `/api/v1/agreements/:id/evaluate` | Evaluate deterministic policy |
 | `GET` | `/api/v1/agreements/:id/audit` | Read the linked audit trail |
@@ -433,7 +435,9 @@ AI can suggest observations. It cannot write the policy, approve a settlement, s
 
 ### Evidence boundary
 
-Evidence is represented by a typed manifest and canonical hash. The current MVP records references and commitments; it does not claim to provide upload storage, MIME validation, malware scanning, or immutable external provenance.
+Evidence has two explicit paths. The JSON manifest endpoint remains available for deterministic fixtures and external references. The multipart upload endpoint accepts allowlisted media types, enforces a per-file size limit, checks magic bytes for binary formats, writes to quarantine, requires a scanner in controlled production mode, and promotes clean content to SHA-256-addressed storage. Retrieval is only exposed for digests referenced by a stored manifest.
+
+The current file store is local disk, not a multi-region object-storage system. Configure `PROOFFLOW_CLAMSCAN_PATH` for ClamAV-backed scanning; without a scanner, uploads fail closed unless explicit development-only unscanned mode is enabled.
 
 ### API boundary
 
@@ -569,7 +573,7 @@ The reviewer is isolated behind a typed interface. The current implementation is
 
 ### Does ProofFlow store uploaded files?
 
-Not yet. The MVP stores evidence metadata and content commitments. A secure upload and scanning pipeline is planned.
+Yes, when using `POST /api/v1/agreements/:id/evidence/upload`. Files are stored under the configured evidence directory by SHA-256 after MIME checks and scanning. The legacy JSON manifest route stores references only. Production deployment still requires managed object storage, retention policies, backups, and operational scanner monitoring.
 
 ### Why not let a smart contract call the AI?
 
