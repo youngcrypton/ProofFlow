@@ -41,6 +41,38 @@ export function createApp(repository: ProofFlowRepository = new MemoryRepository
 
   app.get("/api/v1/agreements", (c) => c.json({ data: repository.listAgreements(), nextCursor: null }));
 
+  app.post("/api/v1/demo/reset", async (c) => {
+    const now = new Date().toISOString();
+    const agreement = AgreementSchema.parse({
+      id: "agr_demo_001",
+      title: "Solar installation — milestone 02",
+      description: "Release after the installed system is inspected and the completion evidence is verified.",
+      payer: "0x0000000000000000000000000000000000000001",
+      recipient: "0x0000000000000000000000000000000000000002",
+      tokenAddress: "0x0000000000000000000000000000000000000003",
+      amountBaseUnits: "4280000000000000000",
+      deadline: "2026-08-28T17:00:00.000Z",
+      policy: { version: "solar-install-v1", requiredEvidence: ["invoice", "signed_approval", "status_update"], minimumConfidenceBps: 9000, releaseAmountBaseUnits: "4280000000000000000", deadline: "2026-08-28T17:00:00.000Z" },
+      policyHash: await sha256Hex(canonicalizePolicy({ version: "solar-install-v1", requiredEvidence: ["invoice", "signed_approval", "status_update"], minimumConfidenceBps: 9000, releaseAmountBaseUnits: "4280000000000000000", deadline: "2026-08-28T17:00:00.000Z" })),
+      state: JobState.READY_TO_RELEASE,
+      createdAt: now,
+      updatedAt: now
+    });
+    repository.saveAgreement(agreement);
+    const manifest = EvidenceManifestContentSchema.extend({ manifestHash: z.string() }).parse({ agreementId: agreement.id, submittedBy: agreement.recipient, submittedAt: now, items: [
+      { type: "invoice", name: "invoice-204.pdf", mediaType: "application/pdf", sha256: "a".repeat(64), uri: "https://example.com/evidence/invoice-204.pdf" },
+      { type: "signed_approval", name: "approval.pdf", mediaType: "application/pdf", sha256: "b".repeat(64), uri: "https://example.com/evidence/approval.pdf" },
+      { type: "status_update", name: "site-status.json", mediaType: "application/json", sha256: "c".repeat(64), uri: "https://example.com/evidence/site-status.json" }
+    ], manifestHash: `0x${"3".repeat(64)}` });
+    repository.saveManifest(manifest);
+    const review = await runReview(new DeterministicDemoReviewer(), { agreementId: agreement.id, manifest, evidenceText: "Installation complete. Invoice total: 4.280 X Layer." });
+    repository.saveReviewRun(review);
+    repository.appendAuditEvent({ aggregateType: "AGREEMENT", aggregateId: agreement.id, eventType: "AGREEMENT_CREATED", actor: "demo-seed", occurredAt: now, correlationId: agreement.id }, { agreement });
+    repository.appendAuditEvent({ aggregateType: "EVIDENCE", aggregateId: agreement.id, eventType: "EVIDENCE_SUBMITTED", actor: agreement.recipient, occurredAt: now, correlationId: agreement.id }, { manifestHash: manifest.manifestHash, itemCount: manifest.items.length });
+    repository.appendAuditEvent({ aggregateType: "POLICY_DECISION", aggregateId: agreement.id, eventType: "AI_REVIEW_COMPLETED", actor: review.provider.provider, occurredAt: review.completedAt ?? now, correlationId: agreement.id }, { reviewRunId: review.id, status: review.status, outputHash: review.outputHash });
+    return c.json({ data: { agreement, manifest, reviewRun: review }, reset: true });
+  });
+
   app.get("/api/v1/agreements/:id/chain-preview", async (c) => {
     const id = c.req.param("id");
     const agreement = repository.getAgreement(id);

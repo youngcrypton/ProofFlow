@@ -28,6 +28,15 @@ async function createFundedReadyAgreement() {
 }
 
 describe("ProofFlow API", () => {
+  it("resets a deterministic seeded demo workspace", async () => {
+    const response = await request("/api/v1/demo/reset", { method: "POST" });
+    const result = await response.json() as { data: { agreement: { id: string; state: string }; manifest: { items: unknown[] }; reviewRun: { status: string } } };
+    expect(response.status).toBe(200);
+    expect(result.data.agreement.id).toBe("agr_demo_001");
+    expect(result.data.agreement.state).toBe("READY_TO_RELEASE");
+    expect(result.data.manifest.items).toHaveLength(3);
+    expect(result.data.reviewRun.status).toBe("SUCCEEDED");
+  });
   it("enforces the funding gate before evidence", async () => {
     const created = await request("/api/v1/agreements", json(createInput()));
     const agreement = (await created.json() as { data: { id: string } }).data;
