@@ -6,8 +6,6 @@ import {ProofFlowVault} from "../src/ProofFlowVault.sol";
 
 contract DeployProofFlowVault is Script {
     uint256 internal constant XLAYER_TESTNET_CHAIN_ID = 1952;
-    uint256 internal constant XLAYER_MAINNET_CHAIN_ID = 196;
-
     function run() external returns (ProofFlowVault vault) {
         uint256 chainId = block.chainid;
         require(chainId == XLAYER_TESTNET_CHAIN_ID, "testnet only");

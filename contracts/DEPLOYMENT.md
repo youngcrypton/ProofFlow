@@ -2,6 +2,18 @@
 
 The deployment script is deliberately fail-closed. It only permits X Layer testnet (`1952`), requires explicit constructor inputs, and reads the deployer key only from the process environment.
 
+## Verified deployment
+
+- Network: X Layer Testnet, chain ID `1952`
+- RPC: `https://testrpc.xlayer.tech/terigon`
+- Vault: `0xF2E246BB76DF876Cef8b38ae84130F4F55De395b`
+- Deployment transaction: `0x8eea11c542de65c5d3fe95679a5f09b29ad7c083cc26a3315c3612f1c7e1e5bf`
+- Funding transaction: `0x66b05a6cf4a9301dcf762a07d0670db43d602f473c3664ec1d6acfb6a19ce336`
+- Evidence transaction: `0x4dd30683f69834a542ae2fb1dce33500e8097abf6a6b675c5784eb97c6da92e1`
+- Release transaction: `0xb3e2e063b0921aeb728f643e287f50d6c839875576bee4c832391636f3e6dd99`
+- Verified path: deploy → fund `0.001` native token → commit evidence → release
+- Final state: `released=true`, vault balance `0`, recipient received `0.001` native token
+
 ## Testnet only
 
 1. Create a dedicated deployer wallet. Never reuse a personal wallet.
