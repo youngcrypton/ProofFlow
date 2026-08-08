@@ -20,7 +20,18 @@ import { DeterministicDemoReviewer, runReview } from "./reviewer";
 
 export function createApp(repository: ProofFlowRepository = new MemoryRepository()) {
   const app = new Hono();
-  app.use("*", cors());
+  const allowedOrigin = process.env.PROOFFLOW_ALLOWED_ORIGIN ?? "http://localhost:5173";
+  app.use("*", cors({
+    origin: allowedOrigin,
+    allowMethods: ["GET", "POST", "OPTIONS"],
+    allowHeaders: ["Content-Type", "Accept", "X-Request-Id"],
+    maxAge: 600
+  }));
+  app.use("*", async (c, next) => {
+    const requestId = c.req.header("x-request-id")?.slice(0, 128) || crypto.randomUUID();
+    c.header("x-request-id", requestId);
+    await next();
+  });
 
   const sha256Hex = async (value: string): Promise<`0x${string}`> => {
     const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value));
@@ -42,6 +53,7 @@ export function createApp(repository: ProofFlowRepository = new MemoryRepository
   app.get("/api/v1/agreements", (c) => c.json({ data: repository.listAgreements(), nextCursor: null }));
 
   app.post("/api/v1/demo/reset", async (c) => {
+    if (process.env.NODE_ENV === "production" && process.env.PROOFFLOW_ENABLE_DEMO_RESET !== "true") return c.json({ error: { code: "DEMO_RESET_DISABLED", message: "Demo reset is disabled in production." } }, 403);
     const now = new Date().toISOString();
     const agreement = AgreementSchema.parse({
       id: "agr_demo_001",
@@ -237,7 +249,11 @@ export function createApp(repository: ProofFlowRepository = new MemoryRepository
       const client = new XLayerClient({ rpcUrl: process.env.XLAYER_RPC_URL ?? "https://testrpc.xlayer.tech/terigon", expectedChainId: Number(process.env.XLAYER_CHAIN_ID ?? 1952) });
       const receipt = await client.getTransactionReceipt(body.data.transactionHash as `0x${string}`);
       if (!receipt) return c.json({ data: { intent, status: "PENDING", receipt: null } });
-      if (!receipt.to || receipt.to.toLowerCase() !== (process.env.PROOFFLOW_VAULT_ADDRESS ?? "").toLowerCase()) return c.json({ error: { code: "RECEIPT_TARGET_MISMATCH", message: "Receipt target does not match the configured ProofFlow vault." } }, 409);
+      const vaultAddress = process.env.PROOFFLOW_VAULT_ADDRESS;
+      if (!vaultAddress || !/^0x[a-fA-F0-9]{40}$/.test(vaultAddress)) return c.json({ error: { code: "VAULT_NOT_CONFIGURED", message: "ProofFlow vault address is not configured." } }, 503);
+      if (!receipt.to || receipt.to.toLowerCase() !== vaultAddress.toLowerCase()) return c.json({ error: { code: "RECEIPT_TARGET_MISMATCH", message: "Receipt target does not match the configured ProofFlow vault." } }, 409);
+      if (receipt.from.toLowerCase() !== agreement.payer.toLowerCase()) return c.json({ error: { code: "RECEIPT_SENDER_MISMATCH", message: "Receipt sender does not match the agreement payer." } }, 409);
+      if (intent.state === "CONFIRMED" || intent.state === "FAILED") return c.json({ data: { intent, status: intent.state, receipt: { ...receipt, blockNumber: receipt.blockNumber.toString() }, idempotent: true } });
       const now = new Date().toISOString();
       const nextState = receipt.status === "0x1" ? "CONFIRMED" : "FAILED";
       const updated = SettlementIntentSchema.parse({ ...intent, state: nextState, updatedAt: now });
@@ -258,7 +274,9 @@ export function createApp(repository: ProofFlowRepository = new MemoryRepository
   return app;
 }
 
-export const app = createApp(new MemoryRepository());
+const repository = new MemoryRepository();
+
+export const app = createApp(repository);
 
 export default {
   port: Number(process.env.PORT ?? 8787),
