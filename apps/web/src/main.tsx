@@ -19,7 +19,11 @@ type AgreementDraft = { title: string; description: string; payer: string; recip
 const API_BASE = import.meta.env.VITE_API_BASE_URL ?? "http://localhost:8787";
 const XLAYER_TESTNET_CHAIN_ID = 1952;
 async function api<T>(path: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(`${API_BASE}${path}`, { ...init, headers: { Accept: "application/json", "content-type": "application/json", ...init?.headers } });
+  const isMultipart = typeof FormData !== "undefined" && init?.body instanceof FormData;
+  const headers = new Headers(init?.headers);
+  headers.set("Accept", "application/json");
+  if (!isMultipart && !headers.has("content-type")) headers.set("content-type", "application/json");
+  const response = await fetch(`${API_BASE}${path}`, { ...init, headers });
   const body = await response.json() as ApiEnvelope<T>;
   if (!response.ok || body.error) throw new Error(body.error?.message ?? `Request failed (${response.status})`);
   return body.data as T;
@@ -218,12 +222,11 @@ function CreateAgreementModal({ onClose, onCreated }: { onClose: () => void; onC
 }
 
 function EvidenceModal({ agreement, onClose, onSubmitted }: { agreement: Agreement; onClose: () => void; onSubmitted: () => Promise<void> }) {
-  const [name, setName] = useState("milestone-evidence.json");
+  const [file, setFile] = useState<File | null>(null);
   const [type, setType] = useState<EvidenceType>(agreement.policy.requiredEvidence[0] ?? "status_update");
-  const [content, setContent] = useState("Evidence submitted by the recipient for review.");
   const [busy, setBusy] = useState(false); const [error, setError] = useState<string | null>(null);
-  async function submit(event: React.FormEvent) { event.preventDefault(); setBusy(true); setError(null); const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(content)); const sha256 = Array.from(new Uint8Array(digest)).map((byte) => byte.toString(16).padStart(2, "0")).join(""); const body = { submittedBy: agreement.recipient, items: [{ type, name, mediaType: "text/plain", sha256, uri: `browser://evidence/${encodeURIComponent(name)}` }] }; try { await api(`/api/v1/agreements/${agreement.id}/evidence`, { method: "POST", body: JSON.stringify(body) }); await onSubmitted(); } catch (cause) { setError(cause instanceof Error ? cause.message : "Evidence could not be submitted."); } finally { setBusy(false); } }
-  return <Modal title="Submit evidence" eyebrow={`${agreement.title} · Evidence manifest`} onClose={onClose}><form className="modal-form" onSubmit={(event) => void submit(event)}><Field label="Evidence type" value={type} select options={agreement.policy.requiredEvidence} onChange={(value) => setType(value as EvidenceType)} /><Field label="File name" value={name} onChange={setName} required /><Field label="Evidence contents" value={content} textarea onChange={setContent} required /><p className="form-note">This browser-only fixture is hashed locally. The hash is stored in the manifest; raw file bytes are not uploaded by this MVP.</p>{error && <div className="form-error">{error}</div>}<ModalActions onClose={onClose} busy={busy} submitLabel="Hash and submit evidence" /></form></Modal>;
+  async function submit(event: React.FormEvent) { event.preventDefault(); if (!file) { setError("Choose an evidence file before submitting."); return; } setBusy(true); setError(null); const form = new FormData(); form.set("evidenceType", type); form.set("submittedBy", agreement.recipient); form.set("file", file); try { await api(`/api/v1/agreements/${agreement.id}/evidence/upload`, { method: "POST", body: form, headers: {} }); await onSubmitted(); } catch (cause) { setError(cause instanceof Error ? cause.message : "Evidence could not be uploaded."); } finally { setBusy(false); } }
+  return <Modal title="Upload evidence" eyebrow={`${agreement.title} · scanned ingestion`} onClose={onClose}><form className="modal-form" onSubmit={(event) => void submit(event)}><Field label="Evidence type" value={type} select options={agreement.policy.requiredEvidence} onChange={(value) => setType(value as EvidenceType)} /><label className="field"><span>Evidence file</span><input type="file" onChange={(event) => setFile(event.target.files?.[0] ?? null)} required /></label><p className="form-note">ProofFlow validates the file type, hashes the bytes, and scans before the evidence becomes part of the manifest. Files are testnet-demo data only.</p>{error && <div className="form-error" role="alert">{error}</div>}<ModalActions onClose={onClose} busy={busy} submitLabel="Scan and submit evidence" /></form></Modal>;
 }
 
 function Modal({ title, eyebrow, onClose, children }: { title: string; eyebrow: string; onClose: () => void; children: ReactNode }) { return <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}><section className="modal" role="dialog" aria-modal="true" aria-labelledby="modal-title"><button className="modal-close" aria-label="Close dialog" onClick={onClose}>×</button><span className="eyebrow">{eyebrow}</span><h2 id="modal-title">{title}</h2>{children}</section></div>; }
