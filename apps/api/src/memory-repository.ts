@@ -63,6 +63,11 @@ export class MemoryRepository implements ProofFlowRepository {
     return intent ? copy(intent) : undefined;
   }
 
+  getSettlementIntentByAgreementId(agreementId: string): SettlementIntent | undefined {
+    const intent = [...this.settlementIntents.values()].find((item) => item.agreementId === agreementId);
+    return intent ? copy(intent) : undefined;
+  }
+
   saveSettlementIntent(intent: SettlementIntent): void {
     this.settlementIntents.set(intent.id, copy(intent));
   }

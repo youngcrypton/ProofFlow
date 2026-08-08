@@ -70,4 +70,19 @@ describe("ProofFlow API", () => {
     expect(events.map((event) => event.sequence)).toEqual([1, 2, 3, 4, 5, 6]);
     expect(events[1]?.previousEventHash).toBe(events[0]?.eventHash);
   });
+  it("authorizes settlement only for an agreement party on the expected chain", async () => {
+    const id = await createFundedReadyAgreement();
+    const created = await request(`/api/v1/agreements/${id}/settlement-intents`, json({ idempotencyKey: "auth-key-001" }));
+    const intent = (await created.json() as { data: { id: string } }).data;
+    const unauthorized = await request(`/api/v1/settlement-intents/${intent.id}/authorization`, json({ walletAddress: address("9"), transactionHash: `0x${"1".repeat(64)}`, chainId: 1952 }));
+    expect(unauthorized.status).toBe(403);
+    const wrongNetwork = await request(`/api/v1/settlement-intents/${intent.id}/authorization`, json({ walletAddress: address("1"), transactionHash: `0x${"2".repeat(64)}`, chainId: 196 }));
+    expect(wrongNetwork.status).toBe(409);
+    const authorized = await request(`/api/v1/settlement-intents/${intent.id}/authorization`, json({ walletAddress: address("1"), transactionHash: `0x${"3".repeat(64)}`, chainId: 1952 }));
+    expect(authorized.status).toBe(200);
+    expect((await authorized.json() as { data: { intent: { state: string } } }).data.intent.state).toBe("SUBMITTED");
+  });
+
+
+
 });

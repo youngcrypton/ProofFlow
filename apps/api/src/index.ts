@@ -204,6 +204,28 @@ export function createApp(repository: ProofFlowRepository = new MemoryRepository
     return c.json({ data: intent }, 201);
   });
 
+  app.get("/api/v1/agreements/:id/settlement-intent", (c) => {
+    const intent = repository.getSettlementIntentByAgreementId(c.req.param("id"));
+    if (!intent) return c.json({ error: { code: "NOT_FOUND", message: "Settlement intent not found." } }, 404);
+    return c.json({ data: intent });
+  });
+
+  app.post("/api/v1/settlement-intents/:id/authorization", async (c) => {
+    const intent = repository.getSettlementIntent(c.req.param("id"));
+    if (!intent) return c.json({ error: { code: "NOT_FOUND", message: "Settlement intent not found." } }, 404);
+    if (intent.state !== "CREATED" && intent.state !== "AWAITING_AUTHORIZATION") return c.json({ error: { code: "INVALID_STATE", message: "Settlement intent is no longer awaiting authorization." } }, 409);
+    const body = z.object({ walletAddress: z.string().regex(/^0x[a-fA-F0-9]{40}$/), transactionHash: z.string().regex(/^0x[a-fA-F0-9]{64}$/), chainId: z.number().int().positive() }).safeParse(await c.req.json().catch(() => null));
+    if (!body.success) return c.json({ error: { code: "VALIDATION_ERROR", message: "Authorization receipt is invalid.", fields: body.error.flatten().fieldErrors } }, 400);
+    const expectedChainId = Number(process.env.XLAYER_CHAIN_ID ?? 1952);
+    if (body.data.chainId !== expectedChainId) return c.json({ error: { code: "WRONG_NETWORK", message: `Expected X Layer chain ${expectedChainId}.` } }, 409);
+    if (body.data.walletAddress.toLowerCase() !== intent.recipient.toLowerCase() && body.data.walletAddress.toLowerCase() !== (repository.getAgreement(intent.agreementId)?.payer ?? "").toLowerCase()) return c.json({ error: { code: "UNAUTHORIZED_WALLET", message: "Wallet is not a party to this agreement." } }, 403);
+    const now = new Date().toISOString();
+    const updated = SettlementIntentSchema.parse({ ...intent, state: "SUBMITTED", updatedAt: now });
+    repository.saveSettlementIntent(updated);
+    repository.appendAuditEvent({ aggregateType: "SETTLEMENT_INTENT", aggregateId: intent.agreementId, eventType: "SETTLEMENT_AUTHORIZED", actor: body.data.walletAddress, occurredAt: now, correlationId: intent.id }, { intentId: intent.id, walletAddress: body.data.walletAddress, transactionHash: body.data.transactionHash, chainId: body.data.chainId });
+    return c.json({ data: { intent: updated, authorization: body.data } });
+  });
+
   app.get("/api/v1/settlement-intents/:id", (c) => {
     const intent = repository.getSettlementIntent(c.req.param("id"));
     if (!intent) return c.json({ error: { code: "NOT_FOUND", message: "Settlement intent not found." } }, 404);
