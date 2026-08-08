@@ -103,7 +103,7 @@ export const EvidenceItemSchema = z.object({
   name: z.string().min(1).max(160),
   mediaType: z.string().min(1).max(120),
   sha256: z.string().regex(/^[a-fA-F0-9]{64}$/, "Invalid SHA-256 digest"),
-  uri: z.string().url()
+  uri: z.string().refine((value) => value.startsWith("/api/v1/evidence/blobs/") || /^https?:\/\//.test(value), "Evidence URI must be an HTTPS/HTTP URL or ProofFlow blob path")
 });
 
 export const EvidenceManifestContentSchema = z.object({

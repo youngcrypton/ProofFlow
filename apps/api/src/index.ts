@@ -20,8 +20,10 @@ import type { AuditEvent } from "@proofflow/domain";
 import { ProofFlowVaultClient, XLayerClient } from "./xlayer";
 import { DeterministicDemoReviewer, runReview } from "./reviewer";
 import { logStructured, Observability, routeLabel } from "./observability";
+import { EvidenceStore } from "./evidence-store";
 
 const MAX_BODY_BYTES = 1_000_000;
+const MAX_UPLOAD_BODY_BYTES = 12_000_000;
 const RATE_WINDOW_MS = 60_000;
 const RATE_LIMIT = Number(process.env.PROOFFLOW_RATE_LIMIT ?? 60);
 const RPC_TIMEOUT_MS = Number(process.env.PROOFFLOW_RPC_TIMEOUT_MS ?? 8_000);
@@ -34,7 +36,11 @@ function isMutating(request: Request): boolean {
   return request.method !== "GET" && request.method !== "HEAD" && request.method !== "OPTIONS";
 }
 
-export function createApp(repository: ProofFlowRepository = new MemoryRepository(), observability = new Observability()) {
+function isMultipartUpload(request: Request): boolean {
+  return request.method === "POST" && new URL(request.url).pathname.endsWith("/evidence/upload") && (request.headers.get("content-type") ?? "").toLowerCase().startsWith("multipart/form-data");
+}
+
+export function createApp(repository: ProofFlowRepository = new MemoryRepository(), observability = new Observability(), evidenceStore = new EvidenceStore()) {
   const app = new Hono();
   const allowedOrigin = process.env.PROOFFLOW_ALLOWED_ORIGIN ?? "http://localhost:5173";
   const xLayerRpcUrl = process.env.XLAYER_RPC_URL ?? "https://testrpc.xlayer.tech/terigon";
@@ -52,9 +58,10 @@ export function createApp(repository: ProofFlowRepository = new MemoryRepository
     const startedAt = performance.now();
     const route = () => routeLabel(new URL(c.req.url).pathname);
     const contentLength = Number(c.req.header("content-length") ?? 0);
-    if (contentLength > MAX_BODY_BYTES) {
+    const bodyLimit = isMultipartUpload(c.req.raw) ? MAX_UPLOAD_BODY_BYTES : MAX_BODY_BYTES;
+    if (contentLength > bodyLimit) {
       observability.recordRequest({ route: route(), status: 413, durationMs: performance.now() - startedAt });
-      return c.json({ error: { code: "PAYLOAD_TOO_LARGE", message: "Request body exceeds the 1 MB limit." } }, 413);
+      return c.json({ error: { code: "PAYLOAD_TOO_LARGE", message: isMultipartUpload(c.req.raw) ? "Upload exceeds the 12 MB request limit." : "Request body exceeds the 1 MB limit." } }, 413);
     }
     const suppliedRequestId = c.req.header("x-request-id");
     const requestId = suppliedRequestId && /^[A-Za-z0-9._:-]{1,128}$/.test(suppliedRequestId) ? suppliedRequestId : crypto.randomUUID();
@@ -247,6 +254,53 @@ export function createApp(repository: ProofFlowRepository = new MemoryRepository
     const manifest = repository.getManifest(c.req.param("id"));
     if (!manifest) return c.json({ error: { code: "NOT_FOUND", message: "Evidence manifest not found." } }, 404);
     return c.json({ data: manifest });
+  });
+
+  app.post("/api/v1/agreements/:id/evidence/upload", async (c) => {
+    const id = c.req.param("id");
+    const agreement = repository.getAgreement(id);
+    if (!agreement) return c.json({ error: { code: "NOT_FOUND", message: "Agreement not found." } }, 404);
+    if (agreement.state !== JobState.FUNDED) return c.json({ error: { code: "INVALID_STATE", message: "Agreement must be funded before evidence upload." } }, 409);
+    const contentType = c.req.header("content-type") ?? "";
+    if (!contentType.toLowerCase().startsWith("multipart/form-data")) return c.json({ error: { code: "UNSUPPORTED_MEDIA_TYPE", message: "Use multipart/form-data with a file field." } }, 415);
+    const form = await c.req.formData().catch(() => null);
+    const file = form?.get("file");
+    const evidenceType = form?.get("evidenceType");
+    const submittedBy = form?.get("submittedBy");
+    if (!file || typeof (file as { arrayBuffer?: unknown }).arrayBuffer !== "function" || typeof evidenceType !== "string" || typeof submittedBy !== "string") return c.json({ error: { code: "VALIDATION_ERROR", message: "file, evidenceType, and submittedBy are required." } }, 400);
+    const upload = file as File;
+    const type = EvidenceTypeSchema.safeParse(evidenceType);
+    const actor = z.string().regex(/^0x[a-fA-F0-9]{40}$/).safeParse(submittedBy);
+    if (!type.success || !actor.success) return c.json({ error: { code: "VALIDATION_ERROR", message: "Evidence type or submitter is invalid." } }, 400);
+    if (upload.size > Number(process.env.PROOFFLOW_EVIDENCE_MAX_BYTES ?? 10 * 1024 * 1024)) return c.json({ error: { code: "FILE_TOO_LARGE", message: "Evidence file exceeds the configured size limit." } }, 413);
+    try {
+      const blob = await evidenceStore.put({ bytes: new Uint8Array(await upload.arrayBuffer()), mediaType: upload.type, originalName: upload.name });
+      const existing = repository.getManifest(id);
+      const now = new Date().toISOString();
+      const item = { type: type.data, name: blob.originalName, mediaType: blob.mediaType, sha256: blob.digest.slice(2), uri: `http://proofflow.local/api/v1/evidence/blobs/${blob.digest.slice(2)}` };
+      const content = existing ? { ...existing, items: [...existing.items, item], submittedAt: now, submittedBy: actor.data } : { agreementId: id, submittedBy: actor.data, submittedAt: now, items: [item] };
+      const parsed = EvidenceManifestContentSchema.parse(content);
+      const manifestHash = await sha256Hex(canonicalizeEvidenceManifest(parsed));
+      const manifest = EvidenceManifestContentSchema.extend({ manifestHash: z.string() }).parse({ ...parsed, manifestHash });
+      repository.saveManifest(manifest);
+      if (!existing) repository.saveAgreement(AgreementSchema.parse({ ...agreement, state: JobState.EVIDENCE_SUBMITTED, updatedAt: now }));
+      repository.appendAuditEvent({ aggregateType: "EVIDENCE", aggregateId: id, eventType: "EVIDENCE_UPLOADED", actor: actor.data, occurredAt: now, correlationId: id }, { digest: blob.digest, byteLength: blob.byteLength, scanStatus: blob.scanStatus, manifestHash });
+      return c.json({ data: { blob, manifest } }, 201);
+    } catch (error) {
+      const code = error instanceof Error ? error.message : "EVIDENCE_INGESTION_FAILED";
+      const status = code === "FILE_TOO_LARGE" ? 413 : code === "UNSUPPORTED_MEDIA_TYPE" || code === "MIME_MISMATCH" ? 415 : code === "SCANNER_UNAVAILABLE" || code === "SCANNER_FAILED" ? 503 : code === "MALWARE_DETECTED" ? 422 : 400;
+      return c.json({ error: { code, message: status === 503 ? "Evidence scanning is unavailable; upload rejected closed." : "Evidence upload was rejected." } }, status);
+    }
+  });
+
+  app.get("/api/v1/evidence/blobs/:digest", async (c) => {
+    const digest = c.req.param("digest");
+    const bytes = await evidenceStore.get(digest);
+    if (!bytes) return c.json({ error: { code: "NOT_FOUND", message: "Evidence blob not found." } }, 404);
+    const manifest = repository.listAgreements().map((agreement) => repository.getManifest(agreement.id)).find((item) => item?.items.some((entry) => entry.sha256.toLowerCase() === digest.toLowerCase().replace(/^0x/, "")));
+    if (!manifest) return c.json({ error: { code: "NOT_FOUND", message: "Evidence blob not found." } }, 404);
+    const item = manifest.items.find((entry) => entry.sha256.toLowerCase() === digest.toLowerCase().replace(/^0x/, ""));
+    return new Response(Buffer.from(bytes), { headers: { "content-type": item?.mediaType ?? "application/octet-stream", "content-length": String(bytes.byteLength), "content-disposition": `attachment; filename="${item?.name ?? "evidence"}"`, "x-content-address": `0x${digest.replace(/^0x/, "")}` } });
   });
 
   app.post("/api/v1/agreements/:id/evaluate", async (c) => {

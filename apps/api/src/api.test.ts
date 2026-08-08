@@ -108,6 +108,36 @@ describe("ProofFlow API", () => {
     expect((await authorized.json() as { error: { code: string } }).error.code).toBe("VAULT_NOT_CONFIGURED");
   });
 
+  it("accepts clean multipart evidence and serves it by content address", async () => {
+    const created = await request("/api/v1/agreements", json(createInput()));
+    const agreement = (await created.json() as { data: { id: string } }).data;
+    await request(`/api/v1/agreements/${agreement.id}/fund`, { method: "POST" });
+    const form = new FormData();
+    form.set("evidenceType", "invoice");
+    form.set("submittedBy", address("2"));
+    form.set("file", new File([new TextEncoder().encode("invoice total 1000")], "invoice.txt", { type: "text/plain" }));
+    const uploaded = await request(`/api/v1/agreements/${agreement.id}/evidence/upload`, { method: "POST", body: form });
+    expect(uploaded.status).toBe(201);
+    const result = await uploaded.json() as { data: { blob: { digest: string }; manifest: { items: Array<{ sha256: string }> } } };
+    expect(result.data.blob.digest).toMatch(/^0x[a-f0-9]{64}$/);
+    const retrieved = await request(`/api/v1/evidence/blobs/${result.data.blob.digest.slice(2)}`);
+    expect(retrieved.status).toBe(200);
+    expect(await retrieved.text()).toBe("invoice total 1000");
+  });
+
+  it("rejects mismatched binary MIME and malware scanner failures closed", async () => {
+    const created = await request("/api/v1/agreements", json(createInput()));
+    const agreement = (await created.json() as { data: { id: string } }).data;
+    await request(`/api/v1/agreements/${agreement.id}/fund`, { method: "POST" });
+    const form = new FormData();
+    form.set("evidenceType", "invoice");
+    form.set("submittedBy", address("2"));
+    form.set("file", new File([new TextEncoder().encode("not a pdf")], "invoice.pdf", { type: "application/pdf" }));
+    const rejected = await request(`/api/v1/agreements/${agreement.id}/evidence/upload`, { method: "POST", body: form });
+    expect(rejected.status).toBe(415);
+    expect((await rejected.json() as { error: { code: string } }).error.code).toBe("MIME_MISMATCH");
+  });
+
   it("does not rate limit safe GET traffic", async () => {
     const responses = await Promise.all(Array.from({ length: 65 }, () => request("/health")));
     expect(responses.every((response) => response.status === 200)).toBe(true);
