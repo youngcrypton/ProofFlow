@@ -4,6 +4,14 @@ pragma solidity ^0.8.24;
 import {Test} from "forge-std/Test.sol";
 import {ProofFlowVault} from "../src/ProofFlowVault.sol";
 
+contract ForceSend {
+    constructor() payable {}
+
+    function destroy(address payable recipient_) external {
+        selfdestruct(recipient_);
+    }
+}
+
 contract ProofFlowVaultTest is Test {
     ProofFlowVault vault;
     address payer = makeAddr("payer");
@@ -45,6 +53,19 @@ contract ProofFlowVaultTest is Test {
         vm.prank(payer);
         vm.expectRevert(ProofFlowVault.NotReady.selector);
         vault.release();
+    }
+
+    function testForcedEtherCannotIncreaseReleasePayout() public {
+        vm.prank(payer);
+        vault.fund{value: 1 ether}();
+        ForceSend forceSend = new ForceSend{value: 0.5 ether}();
+        forceSend.destroy(payable(address(vault)));
+        vm.prank(recipient);
+        vault.commitEvidence(keccak256("evidence"));
+        vm.prank(payer);
+        vault.release();
+        assertEq(recipient.balance, 2 ether);
+        assertEq(address(vault).balance, 0.5 ether);
     }
 
     function testDisputeCanRefund() public {

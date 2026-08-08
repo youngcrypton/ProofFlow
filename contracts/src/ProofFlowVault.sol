@@ -79,7 +79,7 @@ contract ProofFlowVault is ReentrancyGuard {
         if (msg.sender != payer) revert NotPayer();
         if (!funded || released || disputed || evidenceHash == bytes32(0)) revert NotReady();
         released = true;
-        (bool success,) = payable(recipient).call{value: address(this).balance}('');
+        (bool success,) = payable(recipient).call{value: amount}('');
         if (!success) revert TransferFailed();
         emit Released(recipient, amount);
     }
@@ -98,11 +98,11 @@ contract ProofFlowVault is ReentrancyGuard {
         disputed = false;
         if (releaseFunds) {
             released = true;
-            (bool success,) = payable(recipient).call{value: address(this).balance}('');
+            (bool success,) = payable(recipient).call{value: amount}('');
             if (!success) revert TransferFailed();
             emit Released(recipient, amount);
         } else {
-            (bool success,) = payable(payer).call{value: address(this).balance}('');
+            (bool success,) = payable(payer).call{value: amount}('');
             if (!success) revert TransferFailed();
             emit Refunded(payer, amount);
         }
@@ -113,7 +113,7 @@ contract ProofFlowVault is ReentrancyGuard {
         if (paused) revert VaultPaused();
         if (msg.sender != payer || !funded || released || disputed || block.timestamp <= deadline) revert NotReady();
         released = true;
-        (bool success,) = payable(payer).call{value: address(this).balance}('');
+        (bool success,) = payable(payer).call{value: amount}('');
         if (!success) revert TransferFailed();
         emit Refunded(payer, amount);
     }
