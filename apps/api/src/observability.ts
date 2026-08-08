@@ -32,6 +32,7 @@ export class Observability {
   private totalRequests = 0;
   private totalErrors = 0;
   private totalRateLimited = 0;
+  private totalClientErrors = 0;
   private totalDurationMs = 0;
   private lastRequestAt: string | null = null;
   private readonly routes = new Map<string, RouteMetric>();
@@ -48,6 +49,7 @@ export class Observability {
     this.totalDurationMs += durationMs;
     this.lastRequestAt = new Date().toISOString();
     if (input.status >= 500) this.totalErrors += 1;
+    if (input.status >= 400 && input.status < 500) this.totalClientErrors += 1;
     if (input.rateLimited) this.totalRateLimited += 1;
     const route = this.routes.get(input.route) ?? { requests: 0, errors: 0, durationMs: 0 };
     route.requests += 1;
@@ -93,6 +95,7 @@ export class Observability {
       requests: {
         total: this.totalRequests,
         errors: this.totalErrors,
+        clientErrors: this.totalClientErrors,
         rateLimited: this.totalRateLimited,
         averageDurationMs: this.totalRequests ? Math.round(this.totalDurationMs / this.totalRequests) : 0,
         byRoute: Object.fromEntries([...this.routes.entries()].map(([route, metric]) => [route, {

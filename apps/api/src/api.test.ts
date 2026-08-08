@@ -104,6 +104,15 @@ describe("ProofFlow API", () => {
     expect(responses.every((response) => response.status === 200)).toBe(true);
   });
 
+  it("exposes protected operational metrics with route and review counters", async () => {
+    const response = await request("/metrics");
+    expect(response.status).toBe(200);
+    const result = await response.json() as { data: { requests: { total: number; byRoute: Record<string, unknown> }; reviews: { total: number } } };
+    expect(result.data.requests.total).toBeGreaterThan(0);
+    expect(result.data.requests.byRoute["/api/v1/agreements"]).toBeDefined();
+    expect(result.data.reviews.total).toBeGreaterThan(0);
+  });
+
   it("returns a request id and rejects oversized mutation bodies", async () => {
     const health = await request("/health");
     expect(health.headers.get("x-request-id")).toBeTruthy();

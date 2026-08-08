@@ -54,7 +54,8 @@ export function createApp(repository: ProofFlowRepository = new MemoryRepository
       observability.recordRequest({ route: route(), status: 413, durationMs: performance.now() - startedAt });
       return c.json({ error: { code: "PAYLOAD_TOO_LARGE", message: "Request body exceeds the 1 MB limit." } }, 413);
     }
-    const requestId = c.req.header("x-request-id")?.slice(0, 128) || crypto.randomUUID();
+    const suppliedRequestId = c.req.header("x-request-id");
+    const requestId = suppliedRequestId && /^[A-Za-z0-9._:-]{1,128}$/.test(suppliedRequestId) ? suppliedRequestId : crypto.randomUUID();
     c.header("x-request-id", requestId);
     if (isMutating(c.req.raw)) {
       const key = clientKey(c.req.raw);
@@ -101,7 +102,7 @@ export function createApp(repository: ProofFlowRepository = new MemoryRepository
 
   app.get("/metrics", (c) => {
     const metricsToken = process.env.PROOFFLOW_METRICS_TOKEN;
-    if (process.env.NODE_ENV === "production" && metricsToken && c.req.header("authorization") !== `Bearer ${metricsToken}`) {
+    if (process.env.NODE_ENV === "production" && (!metricsToken || c.req.header("authorization") !== `Bearer ${metricsToken}`)) {
       return c.json({ error: { code: "UNAUTHORIZED", message: "A valid metrics token is required." } }, 401);
     }
     return c.json({ data: observability.snapshot() });
