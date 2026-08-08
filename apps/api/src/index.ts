@@ -207,7 +207,12 @@ export function createApp(repository: ProofFlowRepository = new MemoryRepository
     const id = c.req.param("id");
     const decisionEvent = repository.listAuditEvents(id).slice().reverse().find((event: AuditEvent) => event.eventType === "POLICY_EVALUATED");
     if (!decisionEvent) return c.json({ error: { code: "NOT_FOUND", message: "Policy decision not found." } }, 404);
-    return c.json({ data: { decision: null, auditEventId: decisionEvent.id, manifestHash: null } });
+    const payload = (() => {
+      try { return (decisionEvent as AuditEvent & { payload?: unknown }).payload; } catch { return null; }
+    })();
+    const decision = (payload as { decision?: unknown; manifestHash?: string } | undefined)?.decision;
+    if (!decision || !PolicyDecisionSchema.safeParse(decision).success) return c.json({ error: { code: "POLICY_DECISION_UNAVAILABLE", message: "Stored policy decision payload is unavailable." } }, 500);
+    return c.json({ data: { decision: PolicyDecisionSchema.parse(decision), auditEventId: decisionEvent.id, manifestHash: (payload as { manifestHash?: string } | undefined)?.manifestHash ?? null } });
   });
 
   app.get("/api/v1/agreements/:id/audit", (c) => {

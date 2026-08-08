@@ -1,6 +1,8 @@
 import { createHash, randomUUID } from "node:crypto";
 import { AuditEventSchema } from "@proofflow/domain";
 import type { Agreement, AuditEvent, EvidenceManifest, ReviewRun, SettlementIntent } from "@proofflow/domain";
+
+export type StoredAuditEvent = AuditEvent & { payload: unknown };
 import type { AuditEventInput, ProofFlowRepository } from "./repository";
 
 const ZERO_HASH = `0x${"0".repeat(64)}`;
@@ -18,7 +20,7 @@ export class MemoryRepository implements ProofFlowRepository {
   private readonly manifests = new Map<string, EvidenceManifest>();
   private readonly reviewRuns = new Map<string, ReviewRun[]>();
   private readonly settlementIntents = new Map<string, SettlementIntent>();
-  private readonly auditEvents = new Map<string, AuditEvent[]>();
+  private readonly auditEvents = new Map<string, StoredAuditEvent[]>();
 
   listAgreements(): Agreement[] {
     return [...this.agreements.values()].map(copy);
@@ -82,7 +84,7 @@ export class MemoryRepository implements ProofFlowRepository {
     this.appendAuditEvent(audit.input, audit.payload);
   }
 
-  listAuditEvents(aggregateId: string): AuditEvent[] {
+  listAuditEvents(aggregateId: string): StoredAuditEvent[] {
     return (this.auditEvents.get(aggregateId) ?? []).map(copy);
   }
 
@@ -93,7 +95,7 @@ export class MemoryRepository implements ProofFlowRepository {
     const sequence = events.length + 1;
     const payloadHash = hash(JSON.stringify(payload));
     const eventHash = hash(JSON.stringify({ ...input, eventId, sequence, payloadHash, previousEventHash }));
-    const event = AuditEventSchema.parse({ ...input, id: eventId, sequence, payloadHash, previousEventHash, eventHash });
+    const event = { ...AuditEventSchema.parse({ ...input, id: eventId, sequence, payloadHash, previousEventHash, eventHash }), payload: copy(payload) };
     this.auditEvents.set(input.aggregateId, [...events, event]);
     return copy(event);
   }

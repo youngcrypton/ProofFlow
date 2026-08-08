@@ -4,7 +4,11 @@ import { dirname } from "node:path";
 import { Database } from "bun:sqlite";
 import { AgreementSchema, AuditEventSchema, EvidenceManifestSchema, ReviewRunSchema, SettlementIntentSchema } from "@proofflow/domain";
 import type { Agreement, AuditEvent, EvidenceManifest, ReviewRun, SettlementIntent } from "@proofflow/domain";
+
+export type StoredAuditEvent = AuditEvent & { payload: unknown };
 import type { AuditEventInput, ProofFlowRepository } from "./repository";
+
+function copy<T>(value: T): T { return structuredClone(value); }
 
 const ZERO_HASH = `0x${"0".repeat(64)}`;
 
@@ -92,11 +96,11 @@ export class SqliteRepository implements ProofFlowRepository {
     commit();
   }
 
-  listAuditEvents(aggregateId: string): AuditEvent[] {
-    return this.db.query("SELECT payload FROM audit_events WHERE aggregate_id = ?1 ORDER BY sequence ASC").all(aggregateId).map((row) => AuditEventSchema.parse(JSON.parse((row as { payload: string }).payload)));
+  listAuditEvents(aggregateId: string): StoredAuditEvent[] {
+    return this.db.query("SELECT payload FROM audit_events WHERE aggregate_id = ?1 ORDER BY sequence ASC").all(aggregateId).map((row) => { const stored = JSON.parse((row as { payload: string }).payload) as { payload?: unknown }; const { payload, ...event } = stored; return { ...AuditEventSchema.parse(event), payload }; });
   }
 
-  appendAuditEvent(input: AuditEventInput, payload: unknown): AuditEvent {
+  appendAuditEvent(input: AuditEventInput, payload: unknown): StoredAuditEvent {
     const append = this.db.transaction(() => {
       const previous = this.db.query("SELECT event_hash FROM audit_events WHERE aggregate_id = ?1 ORDER BY sequence DESC LIMIT 1").get(input.aggregateId) as { event_hash: string } | null;
       const count = this.db.query("SELECT COUNT(*) AS count FROM audit_events WHERE aggregate_id = ?1").get(input.aggregateId) as { count: number };
@@ -105,7 +109,7 @@ export class SqliteRepository implements ProofFlowRepository {
       const sequence = Number(count.count) + 1;
       const payloadHash = hash(JSON.stringify(payload));
       const eventHash = hash(JSON.stringify({ ...input, eventId, sequence, payloadHash, previousEventHash }));
-      const event = AuditEventSchema.parse({ ...input, id: eventId, sequence, payloadHash, previousEventHash, eventHash });
+      const event = { ...AuditEventSchema.parse({ ...input, id: eventId, sequence, payloadHash, previousEventHash, eventHash }), payload: copy(payload) };
       this.db.query("INSERT INTO audit_events (aggregate_id, sequence, event_hash, payload) VALUES (?1, ?2, ?3, ?4)").run(input.aggregateId, sequence, eventHash, JSON.stringify(event));
       return event;
     });
