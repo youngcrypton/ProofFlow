@@ -69,6 +69,15 @@ describe("ProofFlow API", () => {
     expect(events.length).toBe(6);
     expect(events.map((event) => event.sequence)).toEqual([1, 2, 3, 4, 5, 6]);
     expect(events[1]?.previousEventHash).toBe(events[0]?.eventHash);
+  });  it("returns the persisted deterministic policy decision", async () => {
+    const id = await createFundedReadyAgreement();
+    const response = await request(`/api/v1/agreements/${id}/policy-decision`);
+    expect(response.status).toBe(200);
+    const result = await response.json() as { data: { decision: { outcome: string; policyHash: string }; auditEventId: string; manifestHash: string } };
+    expect(result.data.decision.outcome).toBe("PASS");
+    expect(result.data.decision.policyHash).toMatch(/^0x[a-f0-9]{64}$/);
+    expect(result.data.auditEventId).toMatch(/^evt_/);
+    expect(result.data.manifestHash).toMatch(/^0x[a-f0-9]{64}$/);
   });
   it("rejects an idempotency key reused for another agreement", async () => {
     const first = await createFundedReadyAgreement();
