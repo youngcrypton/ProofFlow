@@ -17,28 +17,6 @@ type AgreementDetail = { agreement: Agreement; manifest: EvidenceManifest | null
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL ?? "http://localhost:8787";
 const XLAYER_TESTNET_CHAIN_ID = 1952;
-const ZERO_HASH = `0x${"0".repeat(64)}`;
-const ADDRESS_A = "0x0000000000000000000000000000000000000001";
-const ADDRESS_B = "0x0000000000000000000000000000000000000002";
-const DEMO_AGREEMENT: Agreement = {
-  id: "agr_demo_001",
-  title: "Solar installation — milestone 02",
-  description: "Release after the installed system is inspected and the completion evidence is verified.",
-  payer: ADDRESS_A,
-  recipient: ADDRESS_B,
-  tokenAddress: ADDRESS_A,
-  amountBaseUnits: "4280000000000000000",
-  deadline: "2026-08-28T17:00:00.000Z",
-  policy: { version: "solar-install-v1", requiredEvidence: ["invoice", "signed_approval", "status_update"], minimumConfidenceBps: 9000, releaseAmountBaseUnits: "4280000000000000000", deadline: "2026-08-28T17:00:00.000Z" },
-  policyHash: ZERO_HASH,
-  state: "READY_TO_RELEASE" as JobState,
-  createdAt: "2026-08-01T09:00:00.000Z",
-  updatedAt: "2026-08-07T16:40:00.000Z"
-};
-const DEMO_MANIFEST: EvidenceManifest = { agreementId: DEMO_AGREEMENT.id, submittedBy: ADDRESS_B, submittedAt: "2026-08-07T16:32:00.000Z", items: [{ type: "invoice", name: "invoice-204.pdf", mediaType: "application/pdf", sha256: "a".repeat(64), uri: "https://example.com/evidence/invoice-204.pdf" }, { type: "signed_approval", name: "approval.pdf", mediaType: "application/pdf", sha256: "b".repeat(64), uri: "https://example.com/evidence/approval.pdf" }, { type: "status_update", name: "site-status.json", mediaType: "application/json", sha256: "c".repeat(64), uri: "https://example.com/evidence/site-status.json" }], manifestHash: `0x${"3".repeat(64)}` };
-const DEMO_REVIEW: ReviewRun = { id: "rev_demo_001", agreementId: DEMO_AGREEMENT.id, evidenceManifestHash: DEMO_MANIFEST.manifestHash, provider: { provider: "ProofFlow demo reviewer", model: "deterministic-reviewer-v1", promptVersion: "demo-1" }, observation: { requiredEvidencePresent: true, extractedFacts: [{ key: "installation_status", value: "complete", source: "site-status.json" }, { key: "invoice_amount", value: "4.280 X Layer", source: "invoice-204.pdf" }], contradictions: [], missingItems: [], confidenceBps: 9400 }, inputHash: `0x${"4".repeat(64)}`, outputHash: `0x${"5".repeat(64)}`, status: "SUCCEEDED", createdAt: "2026-08-07T16:35:00.000Z", completedAt: "2026-08-07T16:35:02.000Z" };
-const DEMO_DECISION: PolicyDecision = { outcome: "PASS", reasons: [], policyVersion: DEMO_AGREEMENT.policy.version, policyHash: DEMO_AGREEMENT.policyHash, evaluatedAt: "2026-08-07T16:35:02.000Z" };
-
 async function api<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(`${API_BASE}${path}`, { ...init, headers: { Accept: "application/json", "content-type": "application/json", ...init?.headers } });
   const body = await response.json() as ApiEnvelope<T>;
@@ -194,7 +172,6 @@ function SkeletonRows() { return <div className="skeleton-rows"><span /><span />
 function EmptyState({ title, copy }: { title: string; copy: string }) { return <div className="empty-state"><span>○</span><b>{title}</b><p>{copy}</p></div>; }
 function AppErrorBoundary({ children }: { children: ReactNode }) { return <>{children}</>; }
 
-function demoAudit(): AuditEvent[] { return [{ id: "evt_03", sequence: 3, aggregateType: "POLICY_DECISION", aggregateId: DEMO_AGREEMENT.id, eventType: "POLICY_EVALUATED", actor: "policy-engine", occurredAt: DEMO_REVIEW.completedAt!, correlationId: DEMO_AGREEMENT.id, payloadHash: `0x${"6".repeat(64)}`, previousEventHash: `0x${"7".repeat(64)}`, eventHash: `0x${"8".repeat(64)}` }, { id: "evt_02", sequence: 2, aggregateType: "EVIDENCE", aggregateId: DEMO_AGREEMENT.id, eventType: "EVIDENCE_SUBMITTED", actor: ADDRESS_B, occurredAt: DEMO_MANIFEST.submittedAt, correlationId: DEMO_AGREEMENT.id, payloadHash: `0x${"9".repeat(64)}`, previousEventHash: ZERO_HASH, eventHash: `0x${"a".repeat(64)}` }]; }
 function formatUnits(value: string | bigint) { const raw = BigInt(value); return Number(raw) / 1e18 >= 1 ? (Number(raw) / 1e18).toLocaleString("en-US", { maximumFractionDigits: 4 }) : raw.toString(); }
 function shortAddress(value: string) { return `${value.slice(0, 6)}…${value.slice(-4)}`; }
 function shortHash(value: string) { return `${value.slice(0, 10)}…${value.slice(-8)}`; }
