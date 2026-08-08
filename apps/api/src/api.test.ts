@@ -89,6 +89,20 @@ describe("ProofFlow API", () => {
     expect((await authorized.json() as { error: { code: string } }).error.code).toBe("VAULT_NOT_CONFIGURED");
   });
 
+  it("does not rate limit safe GET traffic", async () => {
+    const responses = await Promise.all(Array.from({ length: 65 }, () => request("/health")));
+    expect(responses.every((response) => response.status === 200)).toBe(true);
+  });
 
-
+  it("returns a request id and rejects oversized mutation bodies", async () => {
+    const health = await request("/health");
+    expect(health.headers.get("x-request-id")).toBeTruthy();
+    const response = await request("/api/v1/agreements", {
+      method: "POST",
+      headers: { "content-type": "application/json", "content-length": "1000001" },
+      body: "{}"
+    });
+    expect(response.status).toBe(413);
+    expect((await response.json() as { error: { code: string } }).error.code).toBe("PAYLOAD_TOO_LARGE");
+  });
 });

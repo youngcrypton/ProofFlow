@@ -19,6 +19,17 @@ import { ProofFlowVaultClient, XLayerClient } from "./xlayer";
 import { DeterministicDemoReviewer, runReview } from "./reviewer";
 
 const MAX_BODY_BYTES = 1_000_000;
+const RATE_WINDOW_MS = 60_000;
+const RATE_LIMIT = Number(process.env.PROOFFLOW_RATE_LIMIT ?? 60);
+const requestBuckets = new Map<string, { startedAt: number; count: number }>();
+
+function clientKey(request: Request): string {
+  return request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() || "anonymous";
+}
+
+function isMutating(request: Request): boolean {
+  return request.method !== "GET" && request.method !== "HEAD" && request.method !== "OPTIONS";
+}
 
 export function createApp(repository: ProofFlowRepository = new MemoryRepository()) {
   const app = new Hono();
@@ -35,19 +46,33 @@ export function createApp(repository: ProofFlowRepository = new MemoryRepository
     maxAge: 600
   }));
   app.use("*", async (c, next) => {
-    if (requireAuth && c.req.method !== "GET" && c.req.method !== "OPTIONS") {
-      if (!apiToken || c.req.header("authorization") !== `Bearer ${apiToken}`) {
-        return c.json({ error: { code: "UNAUTHORIZED", message: "A valid API bearer token is required." } }, 401);
+    const contentLength = Number(c.req.header("content-length") ?? 0);
+    if (contentLength > MAX_BODY_BYTES) return c.json({ error: { code: "PAYLOAD_TOO_LARGE", message: "Request body exceeds the 1 MB limit." } }, 413);
+    const requestId = c.req.header("x-request-id")?.slice(0, 128) || crypto.randomUUID();
+    c.header("x-request-id", requestId);
+    if (isMutating(c.req.raw)) {
+      const key = clientKey(c.req.raw);
+      const now = Date.now();
+      const bucket = requestBuckets.get(key);
+      if (!bucket || now - bucket.startedAt >= RATE_WINDOW_MS) requestBuckets.set(key, { startedAt: now, count: 1 });
+      else {
+        bucket.count += 1;
+        if (bucket.count > RATE_LIMIT) {
+          c.header("retry-after", "60");
+          return c.json({ error: { code: "RATE_LIMITED", message: "Too many requests. Retry shortly." } }, 429);
+        }
       }
+      if (requestBuckets.size > 2048) for (const [bucketKey, value] of requestBuckets) if (now - value.startedAt >= RATE_WINDOW_MS) requestBuckets.delete(bucketKey);
     }
     await next();
   });
 
   app.use("*", async (c, next) => {
-    const contentLength = Number(c.req.header("content-length") ?? 0);
-    if (contentLength > MAX_BODY_BYTES) return c.json({ error: { code: "PAYLOAD_TOO_LARGE", message: "Request body exceeds the 1 MB limit." } }, 413);
-    const requestId = c.req.header("x-request-id")?.slice(0, 128) || crypto.randomUUID();
-    c.header("x-request-id", requestId);
+    if (requireAuth && isMutating(c.req.raw)) {
+      if (!apiToken || c.req.header("authorization") !== `Bearer ${apiToken}`) {
+        return c.json({ error: { code: "UNAUTHORIZED", message: "A valid API bearer token is required." } }, 401);
+      }
+    }
     await next();
   });
 
@@ -62,9 +87,9 @@ export function createApp(repository: ProofFlowRepository = new MemoryRepository
     try {
       const client = new XLayerClient({ rpcUrl: xLayerRpcUrl, expectedChainId: xLayerChainId });
       const status = await client.getStatus();
-      return c.json({ data: { ...status, blockNumber: status.blockNumber.toString() } });
-    } catch (error) {
-      return c.json({ error: { code: "XLAYER_UNAVAILABLE", message: error instanceof Error ? error.message : "X Layer status unavailable." } }, 503);
+      return c.json({ data: { chainId: status.chainId, blockNumber: status.blockNumber.toString(), network: status.chainId === 196 ? "X Layer mainnet" : "X Layer testnet" } });
+    } catch {
+      return c.json({ error: { code: "XLAYER_UNAVAILABLE", message: "X Layer status is temporarily unavailable." } }, 503);
     }
   });
 
@@ -112,8 +137,8 @@ export function createApp(repository: ProofFlowRepository = new MemoryRepository
       const client = new ProofFlowVaultClient({ rpcUrl: xLayerRpcUrl, expectedChainId: xLayerChainId, vaultAddress: vaultAddress as `0x${string}` });
       const snapshot = await client.assertMatchesAgreement({ payer: agreement.payer, recipient: agreement.recipient, amountBaseUnits: agreement.policy.releaseAmountBaseUnits, policyHash: agreement.policyHash });
       return c.json({ data: { agreementId: id, network: { chainId: snapshot ? xLayerChainId : 0, rpcUrl: xLayerRpcUrl }, vault: { ...snapshot, amount: snapshot.amount.toString(), deadline: snapshot.deadline.toString(), balance: snapshot.balance.toString() }, transactions: { fund: client.previewFund(snapshot.amount), commitEvidence: repository.getManifest(id) ? client.previewCommitEvidence(repository.getManifest(id)!.manifestHash as `0x${string}`) : null, release: client.previewRelease() } } });
-    } catch (error) {
-      return c.json({ error: { code: "VAULT_MISMATCH", message: error instanceof Error ? error.message : "Vault verification failed." } }, 409);
+    } catch {
+      return c.json({ error: { code: "VAULT_MISMATCH", message: "The configured vault does not match this agreement." } }, 409);
     }
   });
 
