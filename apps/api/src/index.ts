@@ -17,13 +17,13 @@ import { MemoryRepository } from "./memory-repository";
 import type { ProofFlowRepository } from "./repository";
 import { ProofFlowVaultClient, XLayerClient } from "./xlayer";
 import { DeterministicDemoReviewer, runReview } from "./reviewer";
+import { logStructured, Observability, routeLabel } from "./observability";
 
 const MAX_BODY_BYTES = 1_000_000;
 const RATE_WINDOW_MS = 60_000;
 const RATE_LIMIT = Number(process.env.PROOFFLOW_RATE_LIMIT ?? 60);
 const RPC_TIMEOUT_MS = Number(process.env.PROOFFLOW_RPC_TIMEOUT_MS ?? 8_000);
 const requestBuckets = new Map<string, { startedAt: number; count: number }>();
-
 function clientKey(request: Request): string {
   return request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() || "anonymous";
 }
@@ -32,7 +32,7 @@ function isMutating(request: Request): boolean {
   return request.method !== "GET" && request.method !== "HEAD" && request.method !== "OPTIONS";
 }
 
-export function createApp(repository: ProofFlowRepository = new MemoryRepository()) {
+export function createApp(repository: ProofFlowRepository = new MemoryRepository(), observability = new Observability()) {
   const app = new Hono();
   const allowedOrigin = process.env.PROOFFLOW_ALLOWED_ORIGIN ?? "http://localhost:5173";
   const xLayerRpcUrl = process.env.XLAYER_RPC_URL ?? "https://testrpc.xlayer.tech/terigon";
@@ -47,8 +47,13 @@ export function createApp(repository: ProofFlowRepository = new MemoryRepository
     maxAge: 600
   }));
   app.use("*", async (c, next) => {
+    const startedAt = performance.now();
+    const route = () => routeLabel(new URL(c.req.url).pathname);
     const contentLength = Number(c.req.header("content-length") ?? 0);
-    if (contentLength > MAX_BODY_BYTES) return c.json({ error: { code: "PAYLOAD_TOO_LARGE", message: "Request body exceeds the 1 MB limit." } }, 413);
+    if (contentLength > MAX_BODY_BYTES) {
+      observability.recordRequest({ route: route(), status: 413, durationMs: performance.now() - startedAt });
+      return c.json({ error: { code: "PAYLOAD_TOO_LARGE", message: "Request body exceeds the 1 MB limit." } }, 413);
+    }
     const requestId = c.req.header("x-request-id")?.slice(0, 128) || crypto.randomUUID();
     c.header("x-request-id", requestId);
     if (isMutating(c.req.raw)) {
@@ -60,12 +65,20 @@ export function createApp(repository: ProofFlowRepository = new MemoryRepository
         bucket.count += 1;
         if (bucket.count > RATE_LIMIT) {
           c.header("retry-after", "60");
+          observability.recordRequest({ route: route(), status: 429, durationMs: performance.now() - startedAt, rateLimited: true });
           return c.json({ error: { code: "RATE_LIMITED", message: "Too many requests. Retry shortly." } }, 429);
         }
       }
       if (requestBuckets.size > 2048) for (const [bucketKey, value] of requestBuckets) if (now - value.startedAt >= RATE_WINDOW_MS) requestBuckets.delete(bucketKey);
     }
-    await next();
+    try {
+      await next();
+    } finally {
+      const status = c.res.status;
+      const durationMs = Math.round(performance.now() - startedAt);
+      observability.recordRequest({ route: route(), status, durationMs });
+      logStructured({ event: "http_request", requestId, method: c.req.method, route: route(), status, durationMs });
+    }
   });
 
   app.use("*", async (c, next) => {
@@ -82,11 +95,21 @@ export function createApp(repository: ProofFlowRepository = new MemoryRepository
     return `0x${[...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join("")}`;
   };
 
-  app.get("/health", (c) => c.json({ ok: true, service: "proofflow-api", timestamp: new Date().toISOString() }));
+  const startedAt = Date.now();
+
+  app.get("/health", (c) => c.json({ ok: true, service: "proofflow-api", timestamp: new Date().toISOString(), uptimeSeconds: Math.floor((Date.now() - startedAt) / 1000) }));
+
+  app.get("/metrics", (c) => {
+    const metricsToken = process.env.PROOFFLOW_METRICS_TOKEN;
+    if (process.env.NODE_ENV === "production" && metricsToken && c.req.header("authorization") !== `Bearer ${metricsToken}`) {
+      return c.json({ error: { code: "UNAUTHORIZED", message: "A valid metrics token is required." } }, 401);
+    }
+    return c.json({ data: observability.snapshot() });
+  });
 
   app.get("/api/v1/xlayer/status", async (c) => {
     try {
-      const client = new XLayerClient({ rpcUrl: xLayerRpcUrl, expectedChainId: xLayerChainId, timeoutMs: RPC_TIMEOUT_MS });
+      const client = new XLayerClient({ rpcUrl: xLayerRpcUrl, expectedChainId: xLayerChainId, timeoutMs: RPC_TIMEOUT_MS, onRpcMetric: (metric) => observability.recordRpc(metric) });
       const status = await client.getStatus();
       return c.json({ data: { chainId: status.chainId, blockNumber: status.blockNumber.toString(), network: status.chainId === 196 ? "X Layer mainnet" : "X Layer testnet" } });
     } catch {
@@ -236,7 +259,9 @@ export function createApp(repository: ProofFlowRepository = new MemoryRepository
     if (agreement.state !== JobState.EVIDENCE_SUBMITTED && agreement.state !== JobState.UNDER_REVIEW) return c.json({ error: { code: "INVALID_STATE", message: "Agreement is not awaiting evidence review." } }, 409);
     const body = z.object({ evidenceText: z.string().max(40_000).default("") }).safeParse(await c.req.json().catch(() => ({})));
     if (!body.success) return c.json({ error: { code: "VALIDATION_ERROR", message: "Review input is invalid.", fields: body.error.flatten().fieldErrors } }, 400);
+    const reviewStartedAt = performance.now();
     const reviewRun = await runReview(new DeterministicDemoReviewer(), { agreementId: id, manifest, evidenceText: body.data.evidenceText });
+    observability.recordReview(reviewRun.status, performance.now() - reviewStartedAt);
     repository.saveReviewRun(reviewRun);
     const updated = AgreementSchema.parse({ ...agreement, state: reviewRun.status === "SUCCEEDED" ? JobState.REVIEWED : JobState.UNDER_REVIEW, updatedAt: reviewRun.completedAt ?? reviewRun.createdAt });
     repository.saveAgreement(updated);
@@ -310,19 +335,24 @@ export function createApp(repository: ProofFlowRepository = new MemoryRepository
     const agreement = repository.getAgreement(intent.agreementId);
     if (!agreement) return c.json({ error: { code: "NOT_FOUND", message: "Agreement not found." } }, 404);
     try {
-      const client = new XLayerClient({ rpcUrl: xLayerRpcUrl, expectedChainId: xLayerChainId, timeoutMs: RPC_TIMEOUT_MS });
+      const client = new XLayerClient({ rpcUrl: xLayerRpcUrl, expectedChainId: xLayerChainId, timeoutMs: RPC_TIMEOUT_MS, onRpcMetric: (metric) => observability.recordRpc(metric) });
       if (!vaultAddress || !/^0x[a-fA-F0-9]{40}$/.test(vaultAddress)) return c.json({ error: { code: "VAULT_NOT_CONFIGURED", message: "ProofFlow vault address is not configured." } }, 503);
       const verifier = new ProofFlowVaultClient({ rpcUrl: xLayerRpcUrl, expectedChainId: xLayerChainId, vaultAddress: vaultAddress as `0x${string}`, timeoutMs: RPC_TIMEOUT_MS });
       const receipt = await verifier.getTransactionReceipt(body.data.transactionHash as `0x${string}`);
-      if (!receipt) return c.json({ data: { intent, status: "PENDING", receipt: null } });
+      if (!receipt) {
+        observability.recordReconciliation("PENDING");
+        return c.json({ data: { intent, status: "PENDING", receipt: null } });
+      }
       if (!receipt.to || receipt.to.toLowerCase() !== vaultAddress.toLowerCase()) return c.json({ error: { code: "RECEIPT_TARGET_MISMATCH", message: "Receipt target does not match the configured ProofFlow vault." } }, 409);
       if (receipt.from.toLowerCase() !== agreement.payer.toLowerCase()) return c.json({ error: { code: "RECEIPT_SENDER_MISMATCH", message: "Receipt sender does not match the agreement payer." } }, 409);
       if (intent.state === "CONFIRMED" || intent.state === "FAILED") {
+        observability.recordReconciliation(intent.state === "CONFIRMED" ? "CONFIRMED" : "FAILED");
         const currentAgreement = repository.getAgreement(intent.agreementId);
         return c.json({ data: { intent, agreement: currentAgreement, status: intent.state, receipt: { ...receipt, blockNumber: receipt.blockNumber.toString() }, idempotent: true } });
       }
       const now = new Date().toISOString();
       const nextState = receipt.status === "0x1" ? "CONFIRMED" : "FAILED";
+      observability.recordReconciliation(nextState);
       const updated = SettlementIntentSchema.parse({ ...intent, state: nextState, updatedAt: now });
       const projectedAgreement = AgreementSchema.parse({ ...agreement, state: nextState === "CONFIRMED" ? JobState.RELEASED : agreement.state, updatedAt: now });
       repository.confirmSettlement(updated, projectedAgreement, {
@@ -331,6 +361,7 @@ export function createApp(repository: ProofFlowRepository = new MemoryRepository
       });
       return c.json({ data: { intent: updated, agreement: projectedAgreement, status: nextState, receipt: { ...receipt, blockNumber: receipt.blockNumber.toString() } } });
     } catch (error) {
+      observability.recordReconciliation("ERROR");
       return c.json({ error: { code: "RECONCILIATION_FAILED", message: error instanceof Error ? error.message : "Could not reconcile transaction." } }, 503);
     }
   });

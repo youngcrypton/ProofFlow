@@ -321,6 +321,8 @@ Copy `.env.example` into the environment used by the API or shell. Never commit 
 | `PROOFFLOW_REQUIRE_AUTH` | Require bearer auth on API routes | `false` locally |
 | `PROOFFLOW_ENABLE_DEMO_RESET` | Enable reset endpoint | `false` |
 | `PROOFFLOW_RATE_LIMIT` | Mutation requests per window/IP | `60` |
+| `PROOFFLOW_RPC_TIMEOUT_MS` | X Layer RPC timeout | `8000` |
+| `PROOFFLOW_METRICS_TOKEN` | Optional production bearer token for `/metrics` | secret; do not commit |
 
 For a shared or deployed environment, set `PROOFFLOW_REQUIRE_AUTH=true`, provide a high-entropy `PROOFFLOW_API_TOKEN`, keep `PROOFFLOW_ENABLE_DEMO_RESET=false`, and use an explicit HTTPS `PROOFFLOW_ALLOWED_ORIGIN`.
 
@@ -331,6 +333,7 @@ The API is intentionally small and lifecycle-oriented.
 | Method | Endpoint | Purpose |
 | --- | --- | --- |
 | `GET` | `/health` | Liveness and configuration-safe status |
+| `GET` | `/metrics` | Operational counters and latency summaries; protect in production |
 | `GET` | `/api/v1/agreements` | List agreement projections |
 | `POST` | `/api/v1/agreements` | Create an agreement |
 | `GET` | `/api/v1/agreements/:id` | Read one agreement |
@@ -456,10 +459,13 @@ The MVP favors correctness and auditability over premature throughput optimizati
 - SQLite provides durable local persistence for the current single-process deployment shape.
 - X Layer RPC calls are isolated behind one adapter and validated at the boundary.
 - Mutation requests are bounded by body size and rate limits.
+- Structured request logs include request ID, normalized route, status, and duration.
+- `GET /metrics` exposes in-process request, RPC, review, and reconciliation summaries; protect it with `PROOFFLOW_METRICS_TOKEN` in production.
+- X Layer RPC calls emit method-level success and latency metrics and enforce a bounded timeout.
 - Audit events use a linked hash chain for tamper-evident projections.
 - Receipt reconciliation is explicit and safe to retry at the API boundary.
 
-Before scaling to production, add connection pooling or a managed database, durable job execution, RPC retries with backoff and circuit breaking, metrics/tracing, queue-backed AI review, and load tests against the target deployment.
+Before scaling to production, add connection pooling or a managed database, durable job execution, RPC retries with backoff and circuit breaking, an external metrics backend, queue-backed AI review, and load tests against the target deployment.
 
 ## Repository structure
 
@@ -506,7 +512,7 @@ ProofFlow/
 
 ### Current status
 
-**Testnet prototype — Gate C operational hardening in progress.**
+**Testnet prototype — Gate C operational hardening complete.**
 
 The current branch contains a working vertical slice across dashboard, API, deterministic domain logic, SQLite persistence, X Layer Testnet integration, wallet authorization, receipt reconciliation, and Foundry contract tests. It is suitable for a controlled hackathon demonstration and technical review.
 
@@ -516,7 +522,7 @@ The current branch contains a working vertical slice across dashboard, API, dete
 2. Multi-tenant identity, authorization, and audit access controls.
 3. File upload pipeline with MIME validation, malware scanning, size limits, and content-addressed storage.
 4. Production-grade AI provider configuration, prompt-injection defenses, and evaluation datasets.
-5. Observability, durable jobs, RPC resilience, load testing, and independent smart-contract audit.
+5. Durable jobs, RPC resilience, load testing, and independent smart-contract audit.
 6. Stablecoin settlement, dispute governance, and post-hackathon production architecture.
 
 See [`docs/roadmap.md`](./docs/roadmap.md) for the detailed delivery plan.

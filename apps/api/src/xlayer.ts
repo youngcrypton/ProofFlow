@@ -11,8 +11,11 @@ const RpcResponseSchema = z.object({
   error: z.object({ code: z.number().int(), message: z.string() }).optional()
 });
 
+export type RpcMetric = { method: string; durationMs: number; success: boolean };
+
 export interface XLayerClientOptions {
   rpcUrl: string;
+  onRpcMetric?: (metric: RpcMetric) => void;
   expectedChainId?: number;
   fetcher?: (input: URL | RequestInfo, init?: RequestInit) => Promise<Response>;
   timeoutMs?: number;
@@ -57,6 +60,7 @@ export class XLayerClient {
   private readonly expectedChainId: number;
   private readonly fetcher: (input: URL | RequestInfo, init?: RequestInit) => Promise<Response>;
   private readonly timeoutMs: number;
+  private readonly onRpcMetric?: (metric: RpcMetric) => void;
 
   constructor(options: XLayerClientOptions) {
     if (!options.rpcUrl.startsWith("https://")) throw new Error("X Layer RPC must use HTTPS");
@@ -64,6 +68,7 @@ export class XLayerClient {
     this.expectedChainId = options.expectedChainId ?? X_LAYER_TESTNET_CHAIN_ID;
     this.fetcher = options.fetcher ?? fetch;
     this.timeoutMs = options.timeoutMs ?? 8_000;
+    this.onRpcMetric = options.onRpcMetric;
     if (!Number.isInteger(this.timeoutMs) || this.timeoutMs < 100 || this.timeoutMs > 60_000) throw new Error("X Layer RPC timeout must be between 100ms and 60s");
   }
 
@@ -81,16 +86,24 @@ export class XLayerClient {
   }
 
   async request(method: string, params: unknown[] = []): Promise<string> {
-    const response = await this.fetchWithTimeout({
+    const startedAt = performance.now();
+    let succeeded = false;
+    try {
+      const response = await this.fetchWithTimeout({
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params })
     });
-    if (!response.ok) throw new Error(`X Layer RPC returned HTTP ${response.status}`);
-    const parsed = RpcResponseSchema.parse(await response.json());
-    if (parsed.error) throw new Error(`X Layer RPC ${parsed.error.code}: ${parsed.error.message}`);
-    if (!parsed.result) throw new Error(`X Layer RPC returned no result for ${method}`);
-    return parsed.result;
+      if (!response.ok) throw new Error(`X Layer RPC returned HTTP ${response.status}`);
+      const parsed = RpcResponseSchema.parse(await response.json());
+      if (parsed.error) throw new Error(`X Layer RPC ${parsed.error.code}: ${parsed.error.message}`);
+      if (!parsed.result) throw new Error(`X Layer RPC returned no result for ${method}`);
+      succeeded = true;
+      return parsed.result;
+    } finally {
+      const durationMs = Math.round(performance.now() - startedAt);
+      this.onRpcMetric?.({ method, durationMs, success: succeeded });
+    }
   }
 
   async getChainId(): Promise<number> {
@@ -118,11 +131,18 @@ export class XLayerClient {
   }
 
   async requestNullable(method: string, params: unknown[] = []): Promise<unknown | null> {
-    const response = await this.fetchWithTimeout({ method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }) });
-    if (!response.ok) throw new Error(`X Layer RPC returned HTTP ${response.status}`);
-    const parsed = z.object({ jsonrpc: z.literal("2.0"), id: z.number().int(), result: z.unknown().nullable().optional(), error: z.object({ code: z.number().int(), message: z.string() }).optional() }).parse(await response.json());
-    if (parsed.error) throw new Error(`X Layer RPC ${parsed.error.code}: ${parsed.error.message}`);
-    return parsed.result ?? null;
+    const startedAt = performance.now();
+    let succeeded = false;
+    try {
+      const response = await this.fetchWithTimeout({ method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }) });
+      if (!response.ok) throw new Error(`X Layer RPC returned HTTP ${response.status}`);
+      const parsed = z.object({ jsonrpc: z.literal("2.0"), id: z.number().int(), result: z.unknown().nullable().optional(), error: z.object({ code: z.number().int(), message: z.string() }).optional() }).parse(await response.json());
+      if (parsed.error) throw new Error(`X Layer RPC ${parsed.error.code}: ${parsed.error.message}`);
+      succeeded = true;
+      return parsed.result ?? null;
+    } finally {
+      this.onRpcMetric?.({ method, durationMs: Math.round(performance.now() - startedAt), success: succeeded });
+    }
   }
 
   async assertExpectedNetwork(): Promise<number> {
