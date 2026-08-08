@@ -8,6 +8,7 @@ import {
   EvidenceTypeSchema,
   JobState,
   ReviewObservationSchema,
+  PolicyDecisionSchema,
   SettlementIntentSchema,
   canonicalizeEvidenceManifest,
   canonicalizePolicy,
@@ -15,6 +16,7 @@ import {
 } from "@proofflow/domain";
 import { MemoryRepository } from "./memory-repository";
 import type { ProofFlowRepository } from "./repository";
+import type { AuditEvent } from "@proofflow/domain";
 import { ProofFlowVaultClient, XLayerClient } from "./xlayer";
 import { DeterministicDemoReviewer, runReview } from "./reviewer";
 import { logStructured, Observability, routeLabel } from "./observability";
@@ -199,6 +201,13 @@ export function createApp(repository: ProofFlowRepository = new MemoryRepository
     repository.saveAgreement(updated);
     repository.appendAuditEvent({ aggregateType: "AGREEMENT", aggregateId: updated.id, eventType: "AGREEMENT_FUNDED", actor: "demo-payer", occurredAt: updated.updatedAt, correlationId: updated.id }, { previousState: agreement.state, nextState: updated.state });
     return c.json({ data: updated });
+  });
+
+  app.get("/api/v1/agreements/:id/policy-decision", (c) => {
+    const id = c.req.param("id");
+    const decisionEvent = repository.listAuditEvents(id).slice().reverse().find((event: AuditEvent) => event.eventType === "POLICY_EVALUATED");
+    if (!decisionEvent) return c.json({ error: { code: "NOT_FOUND", message: "Policy decision not found." } }, 404);
+    return c.json({ data: { decision: null, auditEventId: decisionEvent.id, manifestHash: null } });
   });
 
   app.get("/api/v1/agreements/:id/audit", (c) => {

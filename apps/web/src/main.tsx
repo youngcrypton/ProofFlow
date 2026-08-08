@@ -65,10 +65,10 @@ function App() {
     setDetailLoading(true);
     try {
       const agreement = await api<Agreement>(`/api/v1/agreements/${id}`);
-      const [manifest, reviewRun, audit] = await Promise.all([api<EvidenceManifest>(`/api/v1/agreements/${id}/evidence`).catch(() => null), api<ReviewRun>(`/api/v1/agreements/${id}/reviews/latest`).catch(() => null), api<AuditEvent[]>(`/api/v1/agreements/${id}/audit`)]);
+      const [manifest, reviewRun, decisionResult, audit] = await Promise.all([api<EvidenceManifest>(`/api/v1/agreements/${id}/evidence`).catch(() => null), api<ReviewRun>(`/api/v1/agreements/${id}/reviews/latest`).catch(() => null), api<{ decision: PolicyDecision }>(`/api/v1/agreements/${id}/policy-decision`).catch(() => null), api<AuditEvent[]>(`/api/v1/agreements/${id}/audit`)]);
       let chain: ChainPreview | null = null; let chainError: string | null = null;
       try { chain = await api<ChainPreview>(`/api/v1/agreements/${id}/chain-preview`); } catch (error) { chainError = error instanceof Error ? error.message : "Vault status unavailable"; }
-      setDetail({ agreement, manifest, reviewRun, decision: null, audit, chain, chainError });
+      setDetail({ agreement, manifest, reviewRun, decision: decisionResult?.decision ?? null, audit, chain, chainError });
     } catch (error) { setNotice({ kind: "danger", text: error instanceof Error ? error.message : "Agreement could not be loaded." }); }
     finally { setDetailLoading(false); }
   }, []);
