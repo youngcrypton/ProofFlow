@@ -56,18 +56,6 @@ export function createApp(repository: ProofFlowRepository = new MemoryRepository
     return `0x${[...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join("")}`;
   };
 
-  app.use("/api/v1/*", async (c, next) => {
-    const requireAuth = process.env.PROOFFLOW_REQUIRE_AUTH === "true" || process.env.NODE_ENV === "production";
-    if (requireAuth) {
-      const expected = process.env.PROOFFLOW_API_TOKEN;
-      const authorization = c.req.header("authorization");
-      if (!expected || !authorization?.startsWith("Bearer ") || authorization.slice(7) !== expected) {
-        return c.json({ error: { code: "UNAUTHORIZED", message: "A valid API bearer token is required." } }, 401);
-      }
-    }
-    await next();
-  });
-
   app.get("/health", (c) => c.json({ ok: true, service: "proofflow-api", timestamp: new Date().toISOString() }));
 
   app.get("/api/v1/xlayer/status", async (c) => {

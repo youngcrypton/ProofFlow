@@ -14,3 +14,4 @@ contracts/broadcast/
 data/*.sqlite
 data/*.sqlite-*
 contracts/lib/
+apps/api/data/
