@@ -15,6 +15,7 @@ export interface ProofFlowRepository {
   getSettlementIntentByAgreementId(agreementId: string): SettlementIntent | undefined;
   listSettlementIntents(): SettlementIntent[];
   saveSettlementIntent(intent: SettlementIntent): void;
+  confirmSettlement(intent: SettlementIntent, agreement: Agreement, audit: { input: AuditEventInput; payload: unknown }): void;
   listAuditEvents(aggregateId: string): AuditEvent[];
   appendAuditEvent(input: AuditEventInput, payload: unknown): AuditEvent;
 }

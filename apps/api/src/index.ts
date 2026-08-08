@@ -287,13 +287,19 @@ export function createApp(repository: ProofFlowRepository = new MemoryRepository
       if (!vaultAddress || !/^0x[a-fA-F0-9]{40}$/.test(vaultAddress)) return c.json({ error: { code: "VAULT_NOT_CONFIGURED", message: "ProofFlow vault address is not configured." } }, 503);
       if (!receipt.to || receipt.to.toLowerCase() !== vaultAddress.toLowerCase()) return c.json({ error: { code: "RECEIPT_TARGET_MISMATCH", message: "Receipt target does not match the configured ProofFlow vault." } }, 409);
       if (receipt.from.toLowerCase() !== agreement.payer.toLowerCase()) return c.json({ error: { code: "RECEIPT_SENDER_MISMATCH", message: "Receipt sender does not match the agreement payer." } }, 409);
-      if (intent.state === "CONFIRMED" || intent.state === "FAILED") return c.json({ data: { intent, status: intent.state, receipt: { ...receipt, blockNumber: receipt.blockNumber.toString() }, idempotent: true } });
+      if (intent.state === "CONFIRMED" || intent.state === "FAILED") {
+        const currentAgreement = repository.getAgreement(intent.agreementId);
+        return c.json({ data: { intent, agreement: currentAgreement, status: intent.state, receipt: { ...receipt, blockNumber: receipt.blockNumber.toString() }, idempotent: true } });
+      }
       const now = new Date().toISOString();
       const nextState = receipt.status === "0x1" ? "CONFIRMED" : "FAILED";
       const updated = SettlementIntentSchema.parse({ ...intent, state: nextState, updatedAt: now });
-      repository.saveSettlementIntent(updated);
-      repository.appendAuditEvent({ aggregateType: "SETTLEMENT_INTENT", aggregateId: intent.agreementId, eventType: nextState === "CONFIRMED" ? "SETTLEMENT_CONFIRMED" : "SETTLEMENT_FAILED", actor: "xlayer-reconciler", occurredAt: now, correlationId: intent.id }, { intentId: intent.id, transactionHash: receipt.transactionHash, blockNumber: receipt.blockNumber.toString(), status: receipt.status });
-      return c.json({ data: { intent: updated, status: nextState, receipt: { ...receipt, blockNumber: receipt.blockNumber.toString() } } });
+      const projectedAgreement = AgreementSchema.parse({ ...agreement, state: nextState === "CONFIRMED" ? JobState.RELEASED : agreement.state, updatedAt: now });
+      repository.confirmSettlement(updated, projectedAgreement, {
+        input: { aggregateType: "SETTLEMENT_INTENT", aggregateId: intent.agreementId, eventType: nextState === "CONFIRMED" ? "SETTLEMENT_CONFIRMED" : "SETTLEMENT_FAILED", actor: "xlayer-reconciler", occurredAt: now, correlationId: intent.id },
+        payload: { intentId: intent.id, agreementState: projectedAgreement.state, transactionHash: receipt.transactionHash, blockNumber: receipt.blockNumber.toString(), status: receipt.status }
+      });
+      return c.json({ data: { intent: updated, agreement: projectedAgreement, status: nextState, receipt: { ...receipt, blockNumber: receipt.blockNumber.toString() } } });
     } catch (error) {
       return c.json({ error: { code: "RECONCILIATION_FAILED", message: error instanceof Error ? error.message : "Could not reconcile transaction." } }, 503);
     }

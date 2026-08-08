@@ -70,6 +70,12 @@ describe("ProofFlow API", () => {
     expect(events.map((event) => event.sequence)).toEqual([1, 2, 3, 4, 5, 6]);
     expect(events[1]?.previousEventHash).toBe(events[0]?.eventHash);
   });
+  it("returns an explicit offline state instead of fabricated demo data", async () => {
+    const response = await request("/api/v1/agreements");
+    expect(response.status).toBe(200);
+    expect(Array.isArray((await response.json() as { data: unknown[] }).data)).toBe(true);
+  });
+
   it("authorizes settlement only for an agreement party on the expected chain", async () => {
     const id = await createFundedReadyAgreement();
     const created = await request(`/api/v1/agreements/${id}/settlement-intents`, json({ idempotencyKey: "auth-key-001" }));

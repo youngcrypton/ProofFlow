@@ -76,6 +76,12 @@ export class MemoryRepository implements ProofFlowRepository {
     this.settlementIntents.set(intent.id, copy(intent));
   }
 
+  confirmSettlement(intent: SettlementIntent, agreement: Agreement, audit: { input: AuditEventInput; payload: unknown }): void {
+    this.settlementIntents.set(intent.id, copy(intent));
+    this.agreements.set(agreement.id, copy(agreement));
+    this.appendAuditEvent(audit.input, audit.payload);
+  }
+
   listAuditEvents(aggregateId: string): AuditEvent[] {
     return (this.auditEvents.get(aggregateId) ?? []).map(copy);
   }

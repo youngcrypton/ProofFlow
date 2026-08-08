@@ -83,6 +83,15 @@ export class SqliteRepository implements ProofFlowRepository {
     this.db.query("INSERT INTO settlement_intents (id, idempotency_key, payload) VALUES (?1, ?2, ?3) ON CONFLICT(id) DO UPDATE SET payload = excluded.payload").run(intent.id, intent.idempotencyKey, JSON.stringify(intent));
   }
 
+  confirmSettlement(intent: SettlementIntent, agreement: Agreement, audit: { input: AuditEventInput; payload: unknown }): void {
+    const commit = this.db.transaction(() => {
+      this.db.query("INSERT INTO settlement_intents (id, idempotency_key, payload) VALUES (?1, ?2, ?3) ON CONFLICT(id) DO UPDATE SET payload = excluded.payload").run(intent.id, intent.idempotencyKey, JSON.stringify(intent));
+      this.db.query("INSERT INTO agreements (id, payload) VALUES (?1, ?2) ON CONFLICT(id) DO UPDATE SET payload = excluded.payload").run(agreement.id, JSON.stringify(agreement));
+      this.appendAuditEvent(audit.input, audit.payload);
+    });
+    commit();
+  }
+
   listAuditEvents(aggregateId: string): AuditEvent[] {
     return this.db.query("SELECT payload FROM audit_events WHERE aggregate_id = ?1 ORDER BY sequence ASC").all(aggregateId).map((row) => AuditEventSchema.parse(JSON.parse((row as { payload: string }).payload)));
   }
