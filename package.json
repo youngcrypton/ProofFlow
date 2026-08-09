@@ -5,7 +5,8 @@
   "type": "module",
   "scripts": {
     "dev": "concurrently -k \"npm run dev -w @proofflow/api\" \"npm run dev -w @proofflow/web\"",
-    "build": "npm run build -w @proofflow/domain && npm run build -w @proofflow/api && npm run build -w @proofflow/web",
+    "build": "tsc -b --force packages/domain apps/api && npm run build -w @proofflow/web",
+    "build:api": "tsc -b --force packages/domain apps/api",
     "typecheck": "tsc -b",
     "test": "vitest run",
     "check": "npm run typecheck && npm run test && npm run build"

@@ -1,6 +1,6 @@
 [build]
 builder = "NIXPACKS"
-buildCommand = "npm run build -w @proofflow/domain && npm run build -w @proofflow/api"
+buildCommand = "npm run build:api"
 
 [deploy]
 startCommand = "npm run start -w @proofflow/api"
