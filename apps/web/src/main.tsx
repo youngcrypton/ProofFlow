@@ -217,8 +217,9 @@ function App() {
   }
 
   return <div className="app-shell">
+    <a className="skip-link" href="#main-content">Skip to main content</a>
     <Sidebar selected={selected} network={statusLabel} walletAddress={walletAddress} mobileOpen={mobileNavOpen} onToggle={() => setMobileNavOpen((value) => !value)} onConnect={() => void connectWallet()} onCreate={() => { setCreateOpen(true); setMobileNavOpen(false); }} />
-    <main className="main-content">
+    <main id="main-content" className="main-content">
       <header className="topbar"><div className="topbar-title"><div className="breadcrumb">Workspace / <strong>Trust operations</strong></div><h1>Trust operations</h1></div><div className="topbar-actions"><button className="icon-button" aria-label="Refresh data" onClick={() => void refresh()}>↻</button><div className="network-status"><span className={network ? "status-dot online" : "status-dot"} /><div><b>{statusLabel}</b><small>{network ? `Block ${network.blockNumber}` : networkError ?? "Checking RPC"}</small></div></div><div className="wallet-chip"><span className="wallet-chip-icon">◈</span><div><b>{walletAddress ? shortAddress(walletAddress) : "Wallet disconnected"}</b><small>{walletAddress && walletChainId === XLAYER_TESTNET_CHAIN_ID ? "OKX Wallet · X Layer testnet" : walletAddress ? "OKX Wallet · wrong network" : "OKX Wallet required to settle"}</small></div></div></div></header>
       <div className="testnet-banner"><span className="banner-signal">!</span><div><b>X Layer testnet workspace</b><p>Funds and transactions here are for demonstration only. ProofFlow never signs or moves funds without your explicit OKX Wallet approval.</p></div><span className="banner-mono">CHAIN {network?.chainId ?? XLAYER_TESTNET_CHAIN_ID}</span></div>
       {notice && <div className={`inline-banner ${notice.kind}`} role="status" aria-live="polite"><span>{notice.kind === "danger" ? "!" : notice.kind === "success" ? "✓" : "i"}</span><p>{notice.text}</p><button className="banner-close" aria-label="Dismiss notification" onClick={() => setNotice(null)}>×</button></div>}
