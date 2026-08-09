@@ -3,7 +3,7 @@ builder = "NIXPACKS"
 buildCommand = "npm run build:api"
 
 [deploy]
-startCommand = "npm run start -w @proofflow/api"
+startCommand = "bun run apps/api/src/server.ts"
 healthcheckPath = "/health"
 healthcheckTimeout = 120
 restartPolicyType = "ON_FAILURE"
