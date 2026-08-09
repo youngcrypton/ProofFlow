@@ -1,0 +1,5 @@
+{
+  "installCommand": "npm ci",
+  "buildCommand": "npm run build -w @proofflow/domain && npm run build -w @proofflow/web",
+  "outputDirectory": "apps/web/dist"
+}
