@@ -9,8 +9,10 @@ type ApiEnvelope<T> = { data: T; error?: never } | { data?: never; error: { code
 type XLayerStatus = { rpcUrl: string; chainId: number; blockNumber: string };
 type VaultSnapshot = { address: string; payer: string; recipient: string; amount: string; deadline: string; policyHash: string; evidenceHash: string; funded: boolean; released: boolean; disputed: boolean; paused: boolean; balance: string };
 type TransactionPreview = { to: string; value: string; data: string; method: string };
-type SettlementIntent = { id: string; agreementId: string; amountBaseUnits: string; recipient: string; state: "CREATED" | "AWAITING_AUTHORIZATION" | "SUBMITTED" | "CONFIRMED" | "FAILED" | "UNKNOWN"; createdAt: string; updatedAt: string };
+type SettlementIntent = { id: string; agreementId: string; amountBaseUnits: string; recipient: string; state: "CREATED" | "AWAITING_AUTHORIZATION" | "SUBMITTED" | "CONFIRMED" | "FAILED" | "UNKNOWN"; transactionHash?: string; createdAt: string; updatedAt: string };
 type SettlementAuthorization = { walletAddress: string; transactionHash: string; chainId: number };
+type SettlementReconciliation = { status: "PENDING" | "CONFIRMED" | "FAILED"; intent: SettlementIntent; receipt: { transactionHash: string; blockNumber: string; status: "0x1" | "0x0" } | null };
+type Eip1193Provider = { request: (args: { method: string; params?: unknown[] }) => Promise<unknown>; on?: (event: string, handler: (...args: unknown[]) => void) => void; removeListener?: (event: string, handler: (...args: unknown[]) => void) => void; isOkxWallet?: boolean };
 type ChainPreview = { agreementId: string; network: { chainId: number; rpcUrl: string }; vault: VaultSnapshot; transactions: { fund: TransactionPreview; commitEvidence: TransactionPreview | null; release: TransactionPreview } };
 
 type AgreementDetail = { agreement: Agreement; manifest: EvidenceManifest | null; reviewRun: ReviewRun | null; decision: PolicyDecision | null; audit: AuditEvent[]; chain: ChainPreview | null; chainError: string | null };
@@ -18,6 +20,39 @@ type AgreementDraft = { title: string; description: string; payer: string; recip
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL ?? "http://localhost:8787";
 const XLAYER_TESTNET_CHAIN_ID = 1952;
+const XLAYER_TESTNET_CHAIN_HEX = "0x7a0";
+const XLAYER_TESTNET_CONFIG = { chainId: XLAYER_TESTNET_CHAIN_HEX, chainName: "X Layer testnet", nativeCurrency: { name: "OKB", symbol: "OKB", decimals: 18 }, rpcUrls: ["https://testrpc.xlayer.tech/terigon", "https://xlayertestrpc.okx.com/terigon"], blockExplorerUrls: ["https://www.okx.com/web3/explorer/xlayer-test"] };
+
+function getInjectedProvider(): Eip1193Provider | null {
+  const injected = (window as Window & { okxwallet?: Eip1193Provider; ethereum?: Eip1193Provider }).okxwallet;
+  if (injected) return { ...injected, isOkxWallet: true };
+  const ethereum = (window as Window & { ethereum?: Eip1193Provider }).ethereum;
+  return ethereum ?? null;
+}
+
+function isOkxWallet(provider: Eip1193Provider | null): boolean {
+  return Boolean(provider?.isOkxWallet);
+}
+
+async function switchToXLayer(provider: Eip1193Provider): Promise<void> {
+  try {
+    await provider.request({ method: "wallet_switchEthereumChain", params: [{ chainId: XLAYER_TESTNET_CHAIN_HEX }] });
+  } catch (error) {
+    const code = typeof error === "object" && error !== null && "code" in error ? (error as { code?: number }).code : undefined;
+    if (code !== 4902) throw error;
+    await provider.request({ method: "wallet_addEthereumChain", params: [XLAYER_TESTNET_CONFIG] });
+  }
+}
+
+async function pollSettlement(intentId: string, transactionHash: string): Promise<SettlementReconciliation> {
+  const deadline = Date.now() + 90_000;
+  while (Date.now() < deadline) {
+    const result = await api<SettlementReconciliation>(`/api/v1/settlement-intents/${intentId}/reconcile`, { method: "POST", body: JSON.stringify({ transactionHash }) });
+    if (result.status === "CONFIRMED" || result.status === "FAILED") return result;
+    await new Promise((resolve) => setTimeout(resolve, 4_000));
+  }
+  throw new Error("Transaction submitted, but X Layer confirmation is taking longer than expected. Re-open the agreement to check finality.");
+}
 async function api<T>(path: string, init?: RequestInit): Promise<T> {
   const isMultipart = typeof FormData !== "undefined" && init?.body instanceof FormData;
   const headers = new Headers(init?.headers);
@@ -39,9 +74,12 @@ function App() {
   const [detailLoading, setDetailLoading] = useState(false);
   const [walletAddress, setWalletAddress] = useState<string | null>(null);
   const [walletChainId, setWalletChainId] = useState<number | null>(null);
-  const [walletProvider, setWalletProvider] = useState<{ request: (args: { method: string; params?: unknown[] }) => Promise<unknown>; on?: (event: string, handler: (...args: unknown[]) => void) => void; removeListener?: (event: string, handler: (...args: unknown[]) => void) => void } | null>(null);
+  const [walletProvider, setWalletProvider] = useState<Eip1193Provider | null>(null);
   const [walletBusy, setWalletBusy] = useState(false);
   const [walletError, setWalletError] = useState<string | null>(null);
+  const [walletIsOkx, setWalletIsOkx] = useState(false);
+  const [settlementStage, setSettlementStage] = useState<"idle" | "preparing" | "awaiting_wallet" | "submitted" | "confirming" | "confirmed" | "failed">("idle");
+  const [settlementHash, setSettlementHash] = useState<string | null>(null);
   const [notice, setNotice] = useState<{ kind: "info" | "success" | "danger"; text: string } | null>(null);
   const [resetting, setResetting] = useState(false);
   const [evidenceOpen, setEvidenceOpen] = useState(false);
@@ -79,11 +117,12 @@ function App() {
 
   useEffect(() => { void loadAgreements(); void loadNetwork(); }, [loadAgreements, loadNetwork]);
   useEffect(() => {
-    const provider = (window as Window & { ethereum?: typeof walletProvider }).ethereum ?? null;
+    const provider = getInjectedProvider();
     if (!provider) return;
     const onAccountsChanged = (...args: unknown[]) => { const accounts = (args[0] as string[] | undefined) ?? []; setWalletAddress(accounts[0] ?? null); if (!accounts[0]) setWalletChainId(null); };
     const onChainChanged = (...args: unknown[]) => { const value = args[0]; const chainId = typeof value === "string" ? Number.parseInt(value, 16) : null; setWalletChainId(chainId); };
     setWalletProvider(provider);
+    setWalletIsOkx(isOkxWallet(provider));
     void provider.request({ method: "eth_accounts" }).then((value) => onAccountsChanged(value));
     void provider.request({ method: "eth_chainId" }).then((value) => onChainChanged(value));
     provider.on?.("accountsChanged", onAccountsChanged);
@@ -118,8 +157,10 @@ function App() {
   }
   async function connectWallet() {
     setWalletError(null);
-    const provider = walletProvider ?? (window as Window & { ethereum?: typeof walletProvider }).ethereum;
-    if (!provider) { setWalletError("No browser wallet detected. Install a wallet such as MetaMask, then try again."); return; }
+    const provider = walletProvider ?? getInjectedProvider();
+    if (!provider) { setWalletError("OKX Wallet was not detected. Install OKX Wallet, then try again."); return; }
+    if (!isOkxWallet(provider)) { setWalletError("ProofFlow requires OKX Wallet for this X Layer settlement flow."); return; }
+    setWalletIsOkx(true);
     try {
       const accounts = await provider.request({ method: "eth_requestAccounts" }) as string[];
       const chainHex = await provider.request({ method: "eth_chainId" }) as string;
@@ -130,10 +171,15 @@ function App() {
   }
 
   async function authorizeRelease(agreementId: string) {
-    const provider = walletProvider ?? (window as Window & { ethereum?: typeof walletProvider }).ethereum;
-    if (!provider) { setWalletError("Connect a browser wallet before authorizing settlement."); return; }
+    const provider = walletProvider ?? getInjectedProvider();
+    if (!provider) { setWalletError("OKX Wallet was not detected. Install OKX Wallet before authorizing settlement."); return; }
+    if (!isOkxWallet(provider)) { setWalletError("ProofFlow requires OKX Wallet for X Layer settlement."); return; }
     if (!walletAddress) { await connectWallet(); return; }
-    setWalletBusy(true); setWalletError(null);
+    if (walletChainId !== null && walletChainId !== Number(import.meta.env.VITE_XLAYER_CHAIN_ID ?? XLAYER_TESTNET_CHAIN_ID)) {
+      setWalletError("Switch OKX Wallet to X Layer before authorizing settlement.");
+      return;
+    }
+    setWalletBusy(true); setWalletError(null); setSettlementStage("preparing"); setSettlementHash(null);
     try {
       const intentResponse = await api<SettlementIntent>(`/api/v1/agreements/${agreementId}/settlement-intent`);
       const previewResponse = await api<{ transactions: { release: { to: string; value: string | bigint; data: string } } }>(`/api/v1/agreements/${agreementId}/chain-preview`);
@@ -142,12 +188,21 @@ function App() {
       const chainHex = await provider.request({ method: "eth_chainId" }) as string;
       const chainId = Number.parseInt(chainHex, 16);
       setWalletChainId(chainId);
-      if (chainId !== expectedChainId) throw new Error(`Wrong network. Switch your wallet to X Layer testnet (chain ${expectedChainId}).`);
+      if (chainId !== expectedChainId) await switchToXLayer(provider);
+      const confirmedChainHex = await provider.request({ method: "eth_chainId" }) as string;
+      const confirmedChainId = Number.parseInt(confirmedChainHex, 16);
+      setWalletChainId(confirmedChainId);
+      if (confirmedChainId !== expectedChainId) throw new Error(`OKX Wallet is on chain ${confirmedChainId}. Switch to X Layer testnet before continuing.`);
+      setSettlementStage("awaiting_wallet");
       const transactionHash = await provider.request({ method: "eth_sendTransaction", params: [{ from: walletAddress, to: tx.to, data: tx.data, value: `0x${BigInt(tx.value).toString(16)}` }] }) as string;
-      const authorized = await api<{ intent: SettlementIntent; authorization: SettlementAuthorization }>(`/api/v1/settlement-intents/${intentResponse.id}/authorization`, { method: "POST", body: JSON.stringify({ walletAddress, transactionHash, chainId }) });
-      setNotice({ kind: "success", text: `Settlement transaction authorized: ${shortHash(authorized.authorization.transactionHash)}.` });
+      setSettlementHash(transactionHash); setSettlementStage("submitted");
+      const authorized = await api<{ intent: SettlementIntent; authorization: SettlementAuthorization }>(`/api/v1/settlement-intents/${intentResponse.id}/authorization`, { method: "POST", body: JSON.stringify({ walletAddress, transactionHash, chainId: confirmedChainId }) });
+      setSettlementStage("confirming");
+      await pollSettlement(intentResponse.id, transactionHash);
+      setSettlementStage("confirmed");
+      setNotice({ kind: "success", text: `Settlement confirmed on X Layer: ${shortHash(authorized.authorization.transactionHash)}.` });
       await loadDetail(agreementId);
-    } catch (error) { setWalletError(error instanceof Error ? error.message : "Settlement authorization failed."); }
+    } catch (error) { setSettlementStage("failed"); setWalletError(error instanceof Error ? error.message : "Settlement authorization failed."); }
     finally { setWalletBusy(false); }
   }
 
@@ -170,7 +225,7 @@ function App() {
       <section className="metric-grid"><Metric label="Active agreements" value={String(agreements.length)} detail="Visible to this workspace" /><Metric label="Awaiting your action" value={String(awaiting)} detail="Review, fund, or release" tone={awaiting > 0 ? "lime" : ""} /><Metric label="In escrow" value={`${formatUnits(escrow)} XLAY`} detail="Unsettled agreement value" tone="dark" /><Metric label="Settled this period" value="—" detail="No fabricated comparison" /></section>
       <section className="dashboard-grid"><div className="panel priority-panel"><PanelHeading title="Priority queue" kicker="Next valid action" /><div className="queue-list">{loading ? <SkeletonRows /> : agreements.length === 0 ? <EmptyState title="Your trust queue is clear." copy="Create an agreement to turn a real-world commitment into a verifiable settlement." /> : agreements.map((agreement) => <QueueRow key={agreement.id} agreement={agreement} selected={agreement.id === selectedId} onClick={() => setSelectedId(agreement.id)} />)}</div></div><div className="panel network-panel"><PanelHeading title="Network health" kicker="Observed now" /><div className="network-hero"><div className="network-orbit"><span>×</span></div><div><strong>{network ? "Connected" : "Unavailable"}</strong><p>{network ? `X Layer ${network.chainId === 1952 ? "testnet" : "mainnet"}` : networkError ?? "RPC status is being checked."}</p></div></div><div className="network-detail"><span>Chain ID</span><code>{network?.chainId ?? "—"}</code><span>Latest block</span><code>{network?.blockNumber ?? "—"}</code></div><button className="text-button" onClick={() => void loadNetwork()}>Refresh RPC status ↻</button></div></section>
       <section className="panel agreement-panel"><PanelHeading title="Agreements" kicker={`${agreements.length} visible`} action={<span className="table-scope">Live workspace</span>} /><div className="agreement-table"><div className="table-head"><span>Agreement</span><span>Counterparty</span><span>Amount</span><span>State</span><span>Updated</span></div>{agreements.map((agreement) => <AgreementRow key={agreement.id} agreement={agreement} selected={agreement.id === selectedId} onClick={() => setSelectedId(agreement.id)} />)}</div></section>
-      {selected && <DetailPanel detail={detail} loading={detailLoading} onAction={simulate} walletAddress={walletAddress} walletBusy={walletBusy} walletError={walletError} onConnect={() => void connectWallet()} />}
+      {selected && <DetailPanel detail={detail} loading={detailLoading} onAction={simulate} walletAddress={walletAddress} walletBusy={walletBusy} walletError={walletError} walletIsOkx={walletIsOkx} walletChainId={walletChainId} settlementStage={settlementStage} settlementHash={settlementHash} onConnect={() => void connectWallet()} />}
       {createOpen && <CreateAgreementModal onClose={() => setCreateOpen(false)} onCreated={handleCreated} />}
       {evidenceOpen && selected && <EvidenceModal agreement={selected} onClose={() => setEvidenceOpen(false)} onSubmitted={handleEvidenceSubmitted} />}
     </main>
@@ -182,14 +237,20 @@ function Metric({ label, value, detail, tone = "" }: { label: string; value: str
 function PanelHeading({ title, kicker, action }: { title: string; kicker: string; action?: ReactNode }) { return <div className="panel-heading"><div><span>{kicker}</span><h3>{title}</h3></div>{action}</div>; }
 function QueueRow({ agreement, selected, onClick }: { agreement: Agreement; selected: boolean; onClick: () => void }) { return <button className={`queue-row ${selected ? "selected" : ""}`} onClick={onClick}><span className={`state-mark ${stateTone(agreement.state)}`}>{stateIcon(agreement.state)}</span><span className="queue-main"><b>{agreement.title}</b><small>{agreement.id}</small></span><span className="queue-action">{nextAction(agreement.state)}</span><span className="queue-amount">{formatUnits(agreement.amountBaseUnits)} XLAY</span><span className="queue-date">{relativeTime(agreement.updatedAt)}</span></button>; }
 function AgreementRow({ agreement, selected, onClick }: { agreement: Agreement; selected: boolean; onClick: () => void }) { return <button className={`table-row ${selected ? "selected" : ""}`} onClick={onClick}><span><b>{agreement.title}</b><small>{agreement.id}</small></span><span className="mono">{shortAddress(agreement.recipient)}</span><span className="numeric">{formatUnits(agreement.amountBaseUnits)} XLAY</span><StateBadge state={agreement.state} /><span className="mono">{relativeTime(agreement.updatedAt)}</span></button>; }
-function DetailPanel({ detail, loading, onAction, walletAddress, walletBusy, walletError, onConnect }: { detail: AgreementDetail | null; loading: boolean; onAction: (action: "fund" | "evidence" | "review" | "release") => void; walletAddress: string | null; walletBusy: boolean; walletError: string | null; onConnect: () => void }) { const agreement = detail?.agreement; if (!agreement) return <section className="panel detail-panel"><SkeletonRows /></section>; const review = detail?.reviewRun; const observation = review?.observation; return <section className="detail-panel"><div className="detail-header"><div><span className="eyebrow">Agreement command center · {agreement.id}</span><h2>{agreement.title}</h2><p>{agreement.description}</p></div><StateBadge state={agreement.state} /></div>{detail?.chainError && <div className="chain-warning"><span>!</span><div><b>Vault status is not available</b><p>{detail.chainError}</p><small>Live transaction previews appear after the vault address is configured.</small></div></div>}<div className="detail-grid"><div><section className="detail-card state-banner"><span className={`state-mark large ${stateTone(agreement.state)}`}>{stateIcon(agreement.state)}</span><div><span className="eyebrow">Current state</span><h3>{stateTitle(agreement.state)}</h3><p>{stateCopy(agreement.state)}</p></div><button className="button primary action-button" disabled={loading || !["AWAITING_FUNDING", "FUNDED", "EVIDENCE_SUBMITTED", "READY_TO_RELEASE"].includes(agreement.state)} onClick={() => void onAction(agreement.state === "AWAITING_FUNDING" ? "fund" : agreement.state === "FUNDED" ? "evidence" : agreement.state === "EVIDENCE_SUBMITTED" ? "review" : "release")}>{nextAction(agreement.state)}</button></section><section className="detail-card"><SectionTitle title="Lifecycle" kicker="Agreement state" /><Lifecycle state={agreement.state} /></section><section className="detail-card"><SectionTitle title="Evidence and review" kicker="AI observation · deterministic gate" />{detail?.manifest ? <EvidenceReview manifest={detail.manifest} review={review} observation={observation} decision={detail.decision} /> : <EmptyState title="No evidence manifest" copy="Evidence has not been submitted for this agreement." />}</section><section className="detail-card"><SectionTitle title="Audit trail" kicker="Append-only integrity" /><AuditTrail events={detail?.audit ?? []} /></section></div><aside className="detail-sidebar"><section className="detail-card terms-card"><SectionTitle title="Terms" kicker="Immutable agreement" /><InfoRow label="Amount" value={`${formatUnits(agreement.amountBaseUnits)} XLAY`} /><InfoRow label="Deadline" value={formatDate(agreement.deadline)} /><InfoRow label="Payer" value={shortAddress(agreement.payer)} mono /><InfoRow label="Recipient" value={shortAddress(agreement.recipient)} mono /><InfoRow label="Policy" value={agreement.policy.version} /><InfoRow label="Policy hash" value={shortHash(agreement.policyHash)} mono /></section><section className="detail-card"><SectionTitle title="Vault status" kicker="X Layer settlement" />{detail?.chain ? <VaultCard chain={detail.chain} walletAddress={walletAddress} walletBusy={walletBusy} walletError={walletError} onConnect={onConnect} /> : <div className="not-configured"><span>◌</span><b>Awaiting vault connection</b><p>Configure <code>PROOFFLOW_VAULT_ADDRESS</code> to verify the onchain terms and preview safe transactions.</p></div>}</section></aside></div></section>; }
+function DetailPanel({ detail, loading, onAction, walletAddress, walletBusy, walletError, walletIsOkx, walletChainId, settlementStage, settlementHash, onConnect }: { detail: AgreementDetail | null; loading: boolean; onAction: (action: "fund" | "evidence" | "review" | "release") => void; walletAddress: string | null; walletBusy: boolean; walletError: string | null; walletIsOkx: boolean; walletChainId: number | null; settlementStage: string; settlementHash: string | null; onConnect: () => void }) { const agreement = detail?.agreement; if (!agreement) return <section className="panel detail-panel"><SkeletonRows /></section>; const review = detail?.reviewRun; const observation = review?.observation; return <section className="detail-panel"><div className="detail-header"><div><span className="eyebrow">Agreement command center · {agreement.id}</span><h2>{agreement.title}</h2><p>{agreement.description}</p></div><StateBadge state={agreement.state} /></div>{detail?.chainError && <div className="chain-warning"><span>!</span><div><b>Vault status is not available</b><p>{detail.chainError}</p><small>Live transaction previews appear after the vault address is configured.</small></div></div>}<div className="detail-grid"><div><section className="detail-card state-banner"><span className={`state-mark large ${stateTone(agreement.state)}`}>{stateIcon(agreement.state)}</span><div><span className="eyebrow">Current state</span><h3>{stateTitle(agreement.state)}</h3><p>{stateCopy(agreement.state)}</p></div><button className="button primary action-button" disabled={loading || !["AWAITING_FUNDING", "FUNDED", "EVIDENCE_SUBMITTED", "READY_TO_RELEASE"].includes(agreement.state)} onClick={() => void onAction(agreement.state === "AWAITING_FUNDING" ? "fund" : agreement.state === "FUNDED" ? "evidence" : agreement.state === "EVIDENCE_SUBMITTED" ? "review" : "release")}>{nextAction(agreement.state)}</button></section><section className="detail-card"><SectionTitle title="Lifecycle" kicker="Agreement state" /><Lifecycle state={agreement.state} /></section><section className="detail-card"><SectionTitle title="Evidence and review" kicker="AI observation · deterministic gate" />{detail?.manifest ? <EvidenceReview manifest={detail.manifest} review={review} observation={observation} decision={detail.decision} /> : <EmptyState title="No evidence manifest" copy="Evidence has not been submitted for this agreement." />}</section><section className="detail-card"><SectionTitle title="Audit trail" kicker="Append-only integrity" /><AuditTrail events={detail?.audit ?? []} /></section></div><aside className="detail-sidebar"><section className="detail-card terms-card"><SectionTitle title="Terms" kicker="Immutable agreement" /><InfoRow label="Amount" value={`${formatUnits(agreement.amountBaseUnits)} XLAY`} /><InfoRow label="Deadline" value={formatDate(agreement.deadline)} /><InfoRow label="Payer" value={shortAddress(agreement.payer)} mono /><InfoRow label="Recipient" value={shortAddress(agreement.recipient)} mono /><InfoRow label="Policy" value={agreement.policy.version} /><InfoRow label="Policy hash" value={shortHash(agreement.policyHash)} mono /></section><section className="detail-card"><SectionTitle title="Vault status" kicker="X Layer settlement" />{detail?.chain ? <VaultCard chain={detail.chain} walletAddress={walletAddress} walletBusy={walletBusy} walletError={walletError} walletIsOkx={walletIsOkx} walletChainId={walletChainId} settlementStage={settlementStage} settlementHash={settlementHash} onConnect={onConnect} /> : <div className="not-configured"><span>◌</span><b>Awaiting vault connection</b><p>Configure <code>PROOFFLOW_VAULT_ADDRESS</code> to verify the onchain terms and preview safe transactions.</p></div>}</section></aside></div></section>; }
 function SectionTitle({ title, kicker }: { title: string; kicker: string }) { return <div className="section-title"><span>{kicker}</span><h3>{title}</h3></div>; }
 function InfoRow({ label, value, mono = false }: { label: string; value: string; mono?: boolean }) { return <div className="info-row"><span>{label}</span><strong className={mono ? "mono" : ""}>{value}</strong></div>; }
 function StateBadge({ state }: { state: Agreement["state"] }) { return <span className={`state-badge ${stateTone(state)}`}><span>{stateIcon(state)}</span>{stateLabel(state)}</span>; }
 function Lifecycle({ state }: { state: Agreement["state"] }) { const steps: Agreement["state"][] = [JobState.AWAITING_FUNDING, JobState.FUNDED, JobState.EVIDENCE_SUBMITTED, JobState.UNDER_REVIEW, JobState.READY_TO_RELEASE, JobState.RELEASED]; const index = steps.indexOf(state); return <div className="lifecycle">{steps.map((step, i) => <div className={`lifecycle-step ${i < index ? "complete" : i === index ? "current" : ""}`} key={step}><span>{i < index ? "✓" : i + 1}</span><small>{stateLabel(step)}</small></div>)}</div>; }
 function EvidenceReview({ manifest, review, observation, decision }: { manifest: EvidenceManifest; review: ReviewRun | null | undefined; observation: ReviewRun["observation"] | undefined; decision: PolicyDecision | null }) { return <div className="evidence-review"><div className="evidence-summary"><div className="summary-icon">✓</div><div><b>{review ? "AI review completed" : "Evidence manifest received"}</b><p>{review ? `Structured observations from ${review.provider.model}.` : "Waiting for a review run."}</p></div>{review && <span className="confidence-value">{(review.observation.confidenceBps / 100).toFixed(0)}%</span>}</div><div className="trust-boundary"><span>AI observation</span><i>→</i><span className="policy-chip">Deterministic policy gate</span><i>→</i><span className={decision?.outcome === "PASS" ? "pass-chip" : "review-chip"}>{decision?.outcome ?? "Awaiting evaluation"}</span></div><div className="evidence-list">{manifest.items.map((item) => <div className="evidence-item" key={item.sha256}><span className="file-icon">□</span><span><b>{item.name}</b><small>{item.type} · {item.mediaType}</small></span><code>{shortHash(item.sha256)}</code><span className="pass-text">✓ verified</span></div>)}</div>{observation && <div className="facts"><span className="eyebrow">Extracted facts</span>{observation.extractedFacts.map((fact) => <div className="fact" key={`${fact.key}-${fact.source}`}><b>{fact.key}</b><span>{fact.value}</span><small>Source: {fact.source}</small></div>)}</div>}</div>; }
 function AuditTrail({ events }: { events: AuditEvent[] }) { return events.length ? <div className="audit-list">{events.slice().reverse().map((event) => <div className="audit-item" key={event.id}><span className="audit-dot" /><div><b>{event.eventType.replaceAll("_", " ")}</b><p>{event.actor} · {relativeTime(event.occurredAt)}</p></div><code>{shortHash(event.eventHash)}</code></div>)}</div> : <EmptyState title="No audit events yet" copy="Lifecycle events will appear here as this agreement changes." />; }
-function VaultCard({ chain, walletAddress, walletBusy, walletError, onConnect }: { chain: ChainPreview; walletAddress: string | null; walletBusy: boolean; walletError: string | null; onConnect: () => void }) { return <div className="vault-card"><div className="vault-state"><span className="status-dot online" /><b>{chain.vault.released ? "Released" : chain.vault.funded ? "Funded" : "Awaiting funding"}</b><small>Chain {chain.network.chainId}</small></div><InfoRow label="Vault" value={shortAddress(chain.vault.address)} mono /><InfoRow label="Balance" value={`${formatUnits(chain.vault.balance)} XLAY`} /><div className="preview-block"><span className="eyebrow">Safe transaction previews</span><div className="wallet-auth-row"><span><b>{walletAddress ? `Wallet ${shortAddress(walletAddress)}` : "Wallet authorization"}</b><small>{walletAddress ? "Ready for explicit approval" : "Required before settlement"}</small></span><button className="button primary" disabled={walletBusy} onClick={onConnect}>{walletAddress ? "Connected" : "Connect wallet"}</button></div>{walletError && <div className="wallet-error">{walletError}</div>}{Object.values(chain.transactions).filter(Boolean).map((tx) => <div className="tx-preview" key={tx!.method}><span><b>{tx!.method}</b><small>Not signed · not submitted</small></span><button className="copy-button" onClick={() => void navigator.clipboard?.writeText(JSON.stringify(tx))}>Copy JSON</button></div>)}</div></div>; }
+function VaultCard({ chain, walletAddress, walletBusy, walletError, walletIsOkx, walletChainId, settlementStage, settlementHash, onConnect }: { chain: ChainPreview; walletAddress: string | null; walletBusy: boolean; walletError: string | null; walletIsOkx: boolean; walletChainId: number | null; settlementStage: string; settlementHash: string | null; onConnect: () => void }) {
+  const expectedChainId = Number(import.meta.env.VITE_XLAYER_CHAIN_ID ?? XLAYER_TESTNET_CHAIN_ID);
+  const stageLabel: Record<string, string> = { preparing: "Preparing settlement", awaiting_wallet: "Awaiting OKX Wallet approval", submitted: "Submitted to X Layer", confirming: "Confirming on X Layer", confirmed: "Finality confirmed", failed: "Settlement failed" };
+  const release = chain.transactions.release;
+  const copy = (value: string) => void navigator.clipboard?.writeText(value);
+  return <div className="vault-card"><div className="vault-state"><span className={`status-dot ${chain.vault.released ? "online" : "online"}`} /><b>{chain.vault.released ? "Released" : chain.vault.funded ? "Funded" : "Awaiting funding"}</b><small>Chain {chain.network.chainId}</small></div><InfoRow label="Vault" value={shortAddress(chain.vault.address)} mono /><InfoRow label="Balance" value={`${formatUnits(chain.vault.balance)} XLAY`} /><div className="preview-block"><span className="eyebrow">Settlement authorization</span><div className="wallet-auth-row"><span><b>{walletAddress ? `OKX Wallet · ${shortAddress(walletAddress)}` : "OKX Wallet required"}</b><small>{walletAddress ? walletChainId === expectedChainId ? "Connected on X Layer testnet" : "Connected on another network" : "ProofFlow never signs without your approval"}</small></span><button className="button primary" disabled={walletBusy} onClick={onConnect}>{walletAddress ? "OKX Wallet connected" : "Connect OKX Wallet"}</button></div>{walletError && <div className="wallet-error" role="alert">{walletError}</div>}{settlementStage !== "idle" && <div className={`settlement-status ${settlementStage}`}><span className="status-dot" /><div><b>{stageLabel[settlementStage] ?? settlementStage}</b><small>{settlementHash ? `Transaction ${shortHash(settlementHash)}` : "No transaction has been submitted yet."}</small></div></div>}<div className="tx-preview featured"><div className="tx-preview-heading"><div><span className="eyebrow">Release preview</span><b>Release escrow to recipient</b></div><span className="tx-safety">Safe to review</span></div><div className="tx-facts"><InfoRow label="To" value={shortAddress(release.to)} mono /><InfoRow label="Value" value={`${formatUnits(release.value)} XLAY`} /><InfoRow label="Calldata" value={shortHash(release.data)} mono /></div><small className="tx-disclaimer">This is a preview only. OKX Wallet will show the final transaction. ProofFlow does not custody keys.</small><button className="copy-button" onClick={() => copy(JSON.stringify(release, null, 2))}>Copy transaction JSON</button></div></div></div>;
+}
 function SkeletonRows() { return <div className="skeleton-rows"><span /><span /><span /></div>; }
 function EmptyState({ title, copy }: { title: string; copy: string }) { return <div className="empty-state"><span>○</span><b>{title}</b><p>{copy}</p></div>; }
 function AppErrorBoundary({ children }: { children: ReactNode }) { return <>{children}</>; }
