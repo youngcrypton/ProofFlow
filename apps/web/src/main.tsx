@@ -24,7 +24,7 @@ type ChainPreview = { agreementId: string; network: { chainId: number; rpcUrl: s
 type AgreementDetail = { agreement: Agreement; manifest: EvidenceManifest | null; reviewRun: ReviewRun | null; decision: PolicyDecision | null; audit: AuditEvent[]; chain: ChainPreview | null; chainError: string | null };
 type AgreementDraft = { title: string; description: string; payer: string; recipient: string; tokenAddress: string; amountBaseUnits: string; deadline: string; evidenceType: EvidenceType };
 type SettlementStage = "idle" | "preparing" | "ready" | "awaiting_wallet" | "submitted" | "confirming" | "confirmed" | "failed" | "unknown";
-type View = "overview" | "agreements" | "review" | "activity" | "wallet" | "settings";
+type View = "landing" | "overview" | "agreements" | "review" | "activity" | "wallet" | "settings";
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL ?? "http://localhost:8787";
 const XLAYER_TESTNET_CHAIN_ID = 1952;
@@ -75,6 +75,7 @@ async function api<T>(path: string, init?: RequestInit): Promise<T> {
 
 function getViewFromHash(): View {
   const hash = window.location.hash;
+  if (!hash || hash.startsWith("#landing")) return "landing";
   if (hash.startsWith("#agreements")) return "agreements";
   if (hash.startsWith("#review")) return "review";
   if (hash.startsWith("#activity")) return "activity";
@@ -255,7 +256,7 @@ function App() {
   }
 
   function navigate(view: View) {
-    window.history.pushState({}, "", view === "overview" ? "#overview" : `#${view}`);
+    window.history.pushState({}, "", view === "landing" ? window.location.pathname : `#${view}`);
     setActiveView(view);
     setMobileNavOpen(false);
   }
@@ -290,6 +291,11 @@ function App() {
     <section className="settings-grid"><div className="panel settings-card"><PanelHeading title="Environment" kicker="Current deployment posture" /><div className="setting-callout"><span className="status-dot online" /><div><b>Testnet-first workspace</b><p>ProofFlow is configured for human-reviewed settlement on X Layer testnet. Never treat this environment as production custody.</p></div></div><InfoRow label="Network" value={statusLabel} /><InfoRow label="API base" value={API_BASE} mono /><InfoRow label="Release model" value="Explicit wallet authorization" /></div><div className="panel settings-card"><PanelHeading title="Trust boundaries" kicker="What ProofFlow will never do" /><ul className="safeguard-list"><li>AI output cannot authorize a transfer.</li><li>Policy decisions are deterministic and reviewable.</li><li>Transaction previews show recipient, amount, chain, and calldata.</li><li>Receipts are reconciled before a settlement is called complete.</li></ul></div><div className="panel settings-card"><PanelHeading title="Demo controls" kicker="Safe local workflow" /><p className="settings-copy">Reset the seeded workspace to demonstrate the full agreement lifecycle from a known state.</p><button className="button secondary" disabled={resetting} onClick={() => void resetDemo()}>{resetting ? "Resetting…" : "Reset demo workspace"}</button></div></section>
   </>;
 
+  if (activeView === "landing") return <>
+    <LandingPage statusLabel={statusLabel} network={network} onNavigate={navigate} onCreate={() => setCreateOpen(true)} />
+    {createOpen && <CreateAgreementModal onClose={() => setCreateOpen(false)} onCreated={handleCreated} />}
+  </>;
+
   return <div className="app-shell phase3-app">
     <a className="skip-link" href="#main-content">Skip to main content</a>
     <Sidebar activeView={activeView} network={statusLabel} walletAddress={walletAddress} mobileOpen={mobileNavOpen} onToggle={() => setMobileNavOpen((value) => !value)} onConnect={() => void connectWallet()} onCreate={() => { setCreateOpen(true); setMobileNavOpen(false); }} onNavigate={navigate} />
@@ -306,6 +312,45 @@ function App() {
       {evidenceOpen && selected && <EvidenceModal agreement={selected} onClose={() => setEvidenceOpen(false)} onSubmitted={handleEvidenceSubmitted} />}
       {releaseOpen && selected && detail?.chain && <ReleaseModal agreement={selected} chain={detail.chain} decision={detail.decision} manifest={detail.manifest} walletAddress={walletAddress} walletChainId={walletChainId} walletBusy={walletBusy} walletError={walletError} stage={settlementStage} transactionHash={settlementHash} onClose={() => setReleaseOpen(false)} onConnect={() => void connectWallet()} onSwitchNetwork={() => void switchWalletNetwork()} onAuthorize={() => void authorizeRelease(selected.id)} />}
     </main>
+  </div>;
+}
+
+function LandingPage({ statusLabel, network, onNavigate, onCreate }: { statusLabel: string; network: XLayerStatus | null; onNavigate: (view: View) => void; onCreate: () => void }) {
+  const [menuOpen, setMenuOpen] = useState(false);
+  const go = (view: View) => { setMenuOpen(false); onNavigate(view); };
+  return <div className="landing-page">
+    <div className="landing-canvas" aria-hidden="true"><Galaxy focal={[0.5, 0.42]} rotation={[1, 0]} starSpeed={0.18} density={0.62} hueShift={184} speed={0.18} mouseInteraction mouseRepulsion={false} glowIntensity={0.2} saturation={0.28} twinkleIntensity={0.16} rotationSpeed={0.012} transparent /></div>
+    <div className="landing-grid" aria-hidden="true" />
+    <div className="landing-vignette" aria-hidden="true" />
+    <header className="landing-header">
+      <button className="landing-menu-button" aria-label={menuOpen ? "Close navigation" : "Open navigation"} aria-expanded={menuOpen} onClick={() => setMenuOpen((value) => !value)}><span /><span /><span /></button>
+      <button className="landing-brand" onClick={() => go("landing")} aria-label="ProofFlow home"><span className="landing-brand-mark">P</span><span>ProofFlow</span></button>
+      <div className="landing-network"><span className="landing-live-dot" /> <span>{network ? "X LAYER TESTNET · ONLINE" : "X LAYER TESTNET · CHECKING"}</span><code>1952</code></div>
+    </header>
+    <div className={`landing-menu-backdrop ${menuOpen ? "is-open" : ""}`} aria-hidden={!menuOpen} onClick={() => setMenuOpen(false)} />
+    <aside className={`landing-drawer ${menuOpen ? "is-open" : ""}`} aria-label="ProofFlow navigation">
+      <div className="landing-drawer-kicker">Navigation / 00</div>
+      <h2>Trust, made<br /><em>inspectable.</em></h2>
+      <nav className="landing-drawer-nav">
+        <button onClick={() => go("overview")}><span>01</span><b>Open console</b><i>↗</i></button>
+        <button onClick={() => { setMenuOpen(false); onCreate(); }}><span>02</span><b>Create agreement</b><i>＋</i></button>
+        <button onClick={() => go("review")}><span>03</span><b>Review queue</b><i>→</i></button>
+        <button onClick={() => go("activity")}><span>04</span><b>Audit ledger</b><i>→</i></button>
+        <button onClick={() => go("wallet")}><span>05</span><b>Wallet control</b><i>→</i></button>
+      </nav>
+      <div className="landing-drawer-links"><a href="https://github.com/youngcrypton/ProofFlow/blob/main/docs/product-spec.md" target="_blank" rel="noreferrer">Product document <span>↗</span></a><a href="https://github.com/youngcrypton/ProofFlow" target="_blank" rel="noreferrer">GitHub repository <span>↗</span></a><a href="https://x.com/ProofFloww" target="_blank" rel="noreferrer">Follow on X <span>↗</span></a></div>
+      <div className="landing-drawer-status"><span className="landing-live-dot" /><span>{statusLabel}</span></div>
+    </aside>
+    <main className="landing-main">
+      <section className="landing-hero" aria-labelledby="landing-title">
+        <div className="landing-index">01 <span>/</span> TRUST EXECUTION PROTOCOL</div>
+        <div className="landing-hero-copy"><p className="landing-eyebrow">AI-powered verification for real-world work</p><h1 id="landing-title">Trust the<br /><em>evidence.</em><br />Not the promise.</h1><p className="landing-lede">ProofFlow turns a milestone agreement into a verifiable path from completed work to programmable settlement on X Layer.</p><div className="landing-actions"><button className="landing-button landing-button-primary" onClick={() => onNavigate("overview")}>Enter the console <span>↗</span></button><button className="landing-button landing-button-quiet" onClick={() => window.open("https://github.com/youngcrypton/ProofFlow/blob/main/docs/product-spec.md", "_blank", "noopener,noreferrer")}>Read the brief <span>↗</span></button></div></div>
+        <div className="landing-side-note"><span>AI observes</span><span>Policy decides</span><span>Humans authorize</span><span>Chain settles</span></div>
+      </section>
+      <section className="landing-proof" aria-label="ProofFlow principles"><div className="landing-proof-intro"><span className="landing-eyebrow">The missing trust layer</span><h2>Commerce needs<br /><em>proof before payment.</em></h2></div><div className="landing-proof-cards"><article><span>01 / EVIDENCE</span><h3>Commit the work.</h3><p>Evidence is submitted as a typed manifest with a canonical content hash before it becomes a decision input.</p></article><article><span>02 / POLICY</span><h3>Gate the release.</h3><p>AI extracts observations. A deterministic policy engine produces RELEASE, REVIEW, or BLOCK.</p></article><article><span>03 / RECEIPT</span><h3>Verify the outcome.</h3><p>A bounded wallet intent meets an X Layer vault and returns an independently inspectable receipt.</p></article></div></section>
+      <section className="landing-flow" aria-label="ProofFlow execution flow"><div><span className="landing-eyebrow">One accountable lane</span><h2>Agreement → Evidence → Policy → <em>Receipt</em></h2></div><button className="landing-flow-link" onClick={() => onNavigate("activity")}>See the audit trail <span>↗</span></button></section>
+    </main>
+    <footer className="landing-footer"><span>PROOFFLOW / TESTNET-FIRST / HUMAN-AUTHORIZED</span><div><a href="https://github.com/youngcrypton" target="_blank" rel="noreferrer">GitHub · youngcrypton</a><a href="https://x.com/ProofFloww" target="_blank" rel="noreferrer">X · @ProofFloww</a><button onClick={onCreate}>Start a workflow <span>↗</span></button></div></footer>
   </div>;
 }
 
