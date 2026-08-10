@@ -5,6 +5,7 @@ import AnimatedContent from "./components/motion/AnimatedContent";
 import BlurText from "./components/motion/BlurText";
 import CountUp from "./components/motion/CountUp";
 import SpotlightCard from "./components/motion/SpotlightCard";
+import DepthCarousel from "./components/motion/DepthCarousel";
 import TrustGrid from "./components/backgrounds/TrustGrid";
 import Galaxy from "./components/backgrounds/Galaxy";
 import ProofNetworkField from "./components/backgrounds/ProofNetworkField";
@@ -348,6 +349,36 @@ function LandingPage({ statusLabel, network, onNavigate, onCreate }: { statusLab
         <div className="landing-side-note"><span>AI observes</span><span>Policy decides</span><span>Humans authorize</span><span>Chain settles</span></div>
       </section>
       <section className="landing-proof" aria-label="ProofFlow principles"><div className="landing-proof-intro"><span className="landing-eyebrow">The missing trust layer</span><h2>Commerce needs<br /><em>proof before payment.</em></h2></div><div className="landing-proof-cards"><article><span>01 / EVIDENCE</span><h3>Commit the work.</h3><p>Evidence is submitted as a typed manifest with a canonical content hash before it becomes a decision input.</p></article><article><span>02 / POLICY</span><h3>Gate the release.</h3><p>AI extracts observations. A deterministic policy engine produces RELEASE, REVIEW, or BLOCK.</p></article><article><span>03 / RECEIPT</span><h3>Verify the outcome.</h3><p>A bounded wallet intent meets an X Layer vault and returns an independently inspectable receipt.</p></article></div></section>
+      <section className="landing-depth" aria-labelledby="landing-depth-title">
+        <div className="landing-depth-copy">
+          <span className="landing-eyebrow">The ProofFlow sequence</span>
+          <h2 id="landing-depth-title">Every handoff<br /><em>stays visible.</em></h2>
+          <p>Move through the execution lane: evidence is committed, policy gates the decision, a human authorizes the exact intent, and X Layer returns the receipt.</p>
+          <div className="landing-depth-meta"><span><i /> Drag or use arrow keys</span><span>04 stages / one accountable lane</span></div>
+        </div>
+        <div className="landing-depth-stage">
+          <DepthCarousel
+            items={[
+              { image: "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 720 460'%3E%3Crect width='720' height='460' fill='%23081218'/%3E%3Cpath d='M0 390L720 70' stroke='%23c8f36c' stroke-opacity='.45'/%3E%3Cpath d='M100 0L680 460' stroke='%237dd3fc' stroke-opacity='.25'/%3E%3Ctext x='54' y='100' fill='%23c8f36c' font-family='monospace' font-size='18'%3E01 / EVIDENCE%3C/text%3E%3Ctext x='54' y='190' fill='white' font-family='Georgia' font-size='58'%3ECOMMIT%3C/text%3E%3Ctext x='54' y='250' fill='%23aebdca' font-family='sans-serif' font-size='18'%3EHash the work before it becomes a decision.%3C/text%3E%3C/svg%3E", alt: "Evidence commitment stage" },
+              { image: "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 720 460'%3E%3Crect width='720' height='460' fill='%230a111b'/%3E%3Ccircle cx='560' cy='120' r='130' fill='%23c8f36c' fill-opacity='.08'/%3E%3Cpath d='M0 100H720M0 230H720M0 360H720' stroke='%237dd3fc' stroke-opacity='.16'/%3E%3Ctext x='54' y='100' fill='%237dd3fc' font-family='monospace' font-size='18'%3E02 / POLICY%3C/text%3E%3Ctext x='54' y='190' fill='white' font-family='Georgia' font-size='58'%3EGATE%3C/text%3E%3Ctext x='54' y='250' fill='%23aebdca' font-family='sans-serif' font-size='18'%3ERELEASE, REVIEW, or BLOCK.%3C/text%3E%3C/svg%3E", alt: "Deterministic policy stage" },
+              { image: "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 720 460'%3E%3Crect width='720' height='460' fill='%23131812'/%3E%3Cpath d='M40 380L300 120L520 300L680 70' fill='none' stroke='%23c8f36c' stroke-width='3'/%3E%3Ccircle cx='300' cy='120' r='8' fill='%23c8f36c'/%3E%3Ccircle cx='520' cy='300' r='8' fill='%237dd3fc'/%3E%3Ctext x='54' y='100' fill='%23c8f36c' font-family='monospace' font-size='18'%3E03 / AUTHORIZATION%3C/text%3E%3Ctext x='54' y='190' fill='white' font-family='Georgia' font-size='58'%3ESIGN%3C/text%3E%3Ctext x='54' y='250' fill='%23aebdca' font-family='sans-serif' font-size='18'%3EThe wallet sees the exact settlement intent.%3C/text%3E%3C/svg%3E", alt: "Human authorization stage" },
+              { image: "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 720 460'%3E%3Crect width='720' height='460' fill='%230c1018'/%3E%3Crect x='48' y='74' width='624' height='260' rx='10' fill='none' stroke='%23c8f36c' stroke-opacity='.55'/%3E%3Cpath d='M82 258h140l32-84 70 126 76-190 42 148h90' fill='none' stroke='%237dd3fc' stroke-width='3'/%3E%3Ctext x='54' y='100' fill='%237dd3fc' font-family='monospace' font-size='18'%3E04 / RECEIPT%3C/text%3E%3Ctext x='54' y='190' fill='white' font-family='Georgia' font-size='58'%3ESETTLE%3C/text%3E%3Ctext x='54' y='250' fill='%23aebdca' font-family='sans-serif' font-size='18'%3EX Layer makes the outcome inspectable.%3C/text%3E%3C/svg%3E", alt: "X Layer receipt stage" }
+            ]}
+            cardWidth={310}
+            cardHeight={198}
+            depth={92}
+            spread={72}
+            tilt={13}
+            visibleCards={2.5}
+            falloff={0.24}
+            blur={3}
+            tint="#071017"
+            perspective={1200}
+            showIndicators
+            showControls
+          />
+        </div>
+      </section>
       <section className="landing-flow" aria-label="ProofFlow execution flow"><div><span className="landing-eyebrow">One accountable lane</span><h2>Agreement → Evidence → Policy → <em>Receipt</em></h2></div><button className="landing-flow-link" onClick={() => onNavigate("activity")}>See the audit trail <span>↗</span></button></section>
     </main>
     <footer className="landing-footer"><span>PROOFFLOW / TESTNET-FIRST / HUMAN-AUTHORIZED</span><div><a href="https://github.com/youngcrypton" target="_blank" rel="noreferrer">GitHub · youngcrypton</a><a href="https://x.com/ProofFloww" target="_blank" rel="noreferrer">X · @ProofFloww</a><button onClick={onCreate}>Start a workflow <span>↗</span></button></div></footer>
