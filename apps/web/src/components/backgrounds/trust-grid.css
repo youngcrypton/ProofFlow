@@ -1,0 +1,9 @@
+.pf-trust-grid {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  opacity: .16;
+  background-image: linear-gradient(var(--pf-grid-color) 1px, transparent 1px), linear-gradient(90deg, var(--pf-grid-color) 1px, transparent 1px);
+  background-size: 42px 42px;
+  mask-image: linear-gradient(to bottom, black, transparent 78%);
+}

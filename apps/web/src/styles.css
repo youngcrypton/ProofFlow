@@ -389,3 +389,18 @@ button, input, select { font-family: inherit; }
 .mobile-nav-backdrop { backdrop-filter: blur(12px); }
 @media (max-width: 700px) { .hero-stage { min-height: 360px; padding: 26px; } .metric { padding: 18px; } .metric strong { font-size: 1.65rem; } .footer-links { grid-template-columns: repeat(2, 1fr); } }
 @media (prefers-reduced-motion: reduce) { body::before { animation: none; } }
+
+.modal-form .field input, .modal-form .field textarea, .modal-form .field select { color: #14221d !important; -webkit-text-fill-color: #14221d; caret-color: #14221d; background: #fff !important; border-color: #aebdb3; font-weight: 550; }
+.modal-form .field input::placeholder, .modal-form .field textarea::placeholder { color: #6c7a72 !important; -webkit-text-fill-color: #6c7a72; opacity: 1; }
+.modal-form .field select option { color: #14221d; background: #fff; }
+.modal-form .field input[type="datetime-local"] { color-scheme: light; }
+.modal-form .field input:focus, .modal-form .field textarea:focus, .modal-form .field select:focus { border-color: #58770a; box-shadow: 0 0 0 3px rgba(198, 243, 107, .28); }
+:root { --pf-ink: #17221e; --pf-paper: #f3f1eb; --pf-surface: #fbfbf7; --pf-surface-raised: #fffefa; --pf-cyan: #168f91; --pf-green: #238550; --pf-amber: #a66c10; --pf-red: #c44f55; --pf-focus-ring: #168f91; --pf-spotlight-color: rgba(198, 243, 107, .22); --pf-spotlight-opacity: .72; }
+html { color-scheme: light; }
+body { background: var(--pf-paper); color: var(--pf-ink); }
+.pf-trust-grid { --pf-grid-color: rgba(22, 143, 145, .2); }
+@media (prefers-color-scheme: dark) { html { color-scheme: dark; } body { background: #070b12; color: #f4f7fb; } :root { --pf-spotlight-color: rgba(198, 243, 107, .14); --pf-focus-ring: #8be1e0; } }
+@media (prefers-reduced-motion: reduce) { .hero-glow, .network-orbit, .page-transition { animation: none !important; } }
+.pf-spotlight-card.is-interactive { display: block; width: 100%; border: 0; margin: 0; color: inherit; font: inherit; text-align: inherit; cursor: pointer; }
+.pf-spotlight-card.is-interactive:focus-visible { outline: 3px solid var(--pf-focus-ring, #168f91); outline-offset: 3px; }
+@media (prefers-reduced-motion: reduce) { .pf-spotlight-card.is-interactive { transition: none; } }

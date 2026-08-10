@@ -1,0 +1,25 @@
+.pf-spotlight-card {
+  position: relative;
+  isolation: isolate;
+  overflow: hidden;
+}
+
+.pf-spotlight-card::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  opacity: 0;
+  background: radial-gradient(circle 180px at var(--pf-spotlight-x, 50%) var(--pf-spotlight-y, 50%), var(--pf-spotlight-color), transparent 72%);
+  transition: opacity 180ms ease;
+}
+
+.pf-spotlight-card.is-interactive:hover::before,
+.pf-spotlight-card.is-interactive:focus-within::before { opacity: var(--pf-spotlight-opacity); }
+
+@media (prefers-reduced-motion: reduce) {
+  .pf-spotlight-card::before { display: none; }
+}
+.pf-spotlight-card.is-interactive:focus-visible { outline: 3px solid var(--pf-focus-ring, #168f91); outline-offset: 3px; }
+@media (prefers-reduced-motion: reduce) { .pf-spotlight-card.is-interactive { transition: none; } }

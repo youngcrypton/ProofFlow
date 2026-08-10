@@ -1,0 +1,15 @@
+.pf-animated-content {
+  opacity: 0;
+  transform: translate3d(0, 10px, 0);
+  transition: opacity 280ms ease var(--pf-animation-delay, 0ms), transform 280ms ease var(--pf-animation-delay, 0ms);
+}
+
+.pf-animated-content.is-visible {
+  opacity: 1;
+  transform: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .pf-animated-content,
+  .pf-animated-content.is-visible { opacity: 1; transform: none; transition: none; }
+}
