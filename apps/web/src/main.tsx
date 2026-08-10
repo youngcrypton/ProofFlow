@@ -293,7 +293,7 @@ function App() {
   </>;
 
   if (activeView === "landing") return <>
-    <LandingPage statusLabel={statusLabel} network={network} onNavigate={navigate} onCreate={() => setCreateOpen(true)} />
+    <LandingPage statusLabel={statusLabel} network={network} onNavigate={navigate} onCreate={() => setCreateOpen(true)} agreements={agreements} walletAddress={walletAddress} onConnect={() => void connectWallet()} />
     {createOpen && <CreateAgreementModal onClose={() => setCreateOpen(false)} onCreated={handleCreated} />}
   </>;
 
@@ -316,7 +316,7 @@ function App() {
   </div>;
 }
 
-function LandingPage({ statusLabel, network, onNavigate, onCreate }: { statusLabel: string; network: XLayerStatus | null; onNavigate: (view: View) => void; onCreate: () => void }) {
+function LandingPage({ statusLabel, network, agreements, walletAddress, onNavigate, onCreate, onConnect }: { statusLabel: string; network: XLayerStatus | null; agreements: Agreement[]; walletAddress: string | null; onNavigate: (view: View) => void; onCreate: () => void; onConnect: () => void }) {
   const [menuOpen, setMenuOpen] = useState(false);
   const go = (view: View) => { setMenuOpen(false); onNavigate(view); };
   return <div className="landing-page">
@@ -326,7 +326,7 @@ function LandingPage({ statusLabel, network, onNavigate, onCreate }: { statusLab
     <header className="landing-header">
       <button className="landing-menu-button" aria-label={menuOpen ? "Close navigation" : "Open navigation"} aria-expanded={menuOpen} onClick={() => setMenuOpen((value) => !value)}><span /><span /><span /></button>
       <button className="landing-brand" onClick={() => go("landing")} aria-label="ProofFlow home"><span className="landing-brand-mark">P</span><span>ProofFlow</span></button>
-      <div className="landing-network"><span className="landing-live-dot" /> <span>{network ? "X LAYER TESTNET · ONLINE" : "X LAYER TESTNET · CHECKING"}</span><code>1952</code></div>
+      <div className="landing-header-actions"><div className="landing-network"><span className="landing-live-dot" /> <span>{network ? "X LAYER TESTNET · ONLINE" : "X LAYER TESTNET · CHECKING"}</span><code>1952</code></div><button className="landing-wallet-button" onClick={onConnect}><span className="landing-wallet-orb" aria-hidden="true">◈</span><span>{walletAddress ? shortAddress(walletAddress) : "Connect OKX Wallet"}</span><span className="landing-wallet-arrow" aria-hidden="true">↗</span></button></div>
     </header>
     <div className={`landing-menu-backdrop ${menuOpen ? "is-open" : ""}`} aria-hidden={!menuOpen} onClick={() => setMenuOpen(false)} />
     <aside className={`landing-drawer ${menuOpen ? "is-open" : ""}`} aria-label="ProofFlow navigation">
@@ -345,9 +345,10 @@ function LandingPage({ statusLabel, network, onNavigate, onCreate }: { statusLab
     <main className="landing-main">
       <section className="landing-hero" aria-labelledby="landing-title">
         <div className="landing-index">01 <span>/</span> TRUST EXECUTION PROTOCOL</div>
-        <div className="landing-hero-copy"><p className="landing-eyebrow">AI-powered verification for real-world work</p><h1 id="landing-title">Trust the<br /><em>evidence.</em><br />Not the promise.</h1><p className="landing-lede">ProofFlow turns a milestone agreement into a verifiable path from completed work to programmable settlement on X Layer.</p><div className="landing-actions"><button className="landing-button landing-button-primary" onClick={() => onNavigate("overview")}>Enter the console <span>↗</span></button><button className="landing-button landing-button-quiet" onClick={() => window.open("https://github.com/youngcrypton/ProofFlow/blob/main/docs/product-spec.md", "_blank", "noopener,noreferrer")}>Read the brief <span>↗</span></button></div></div>
+        <div className="landing-hero-copy"><p className="landing-eyebrow">AI-powered verification for real-world work</p><h1 id="landing-title">Trust the<br /><em>evidence.</em><br />Not the promise.</h1><p className="landing-lede">ProofFlow turns a milestone agreement into a verifiable path from completed work to programmable settlement on X Layer.</p><div className="landing-actions"><button className="landing-button landing-button-primary" onClick={() => onNavigate("overview")}>Enter the console <span>↗</span></button><button className="landing-button landing-button-wallet" onClick={onConnect}><span className="landing-wallet-orb" aria-hidden="true">◈</span>{walletAddress ? `Wallet ready · ${shortAddress(walletAddress)}` : "Connect wallet to settle"}</button><button className="landing-button landing-button-quiet" onClick={() => window.open("https://github.com/youngcrypton/ProofFlow/blob/main/docs/product-spec.md", "_blank", "noopener,noreferrer")}>Read the brief <span>↗</span></button></div></div>
         <div className="landing-side-note"><span>AI observes</span><span>Policy decides</span><span>Humans authorize</span><span>Chain settles</span></div>
       </section>
+      <section className="landing-live-agreements" aria-labelledby="landing-live-agreements-title"><div className="landing-live-heading"><span className="landing-eyebrow">Live agreement stream</span><h2 id="landing-live-agreements-title">Proof in motion.</h2><p>Recent commitments stay visible while they move from evidence to settlement.</p></div><div className="landing-agreement-orbit">{(agreements.length ? agreements.slice(0, 4) : [{ id: "DEMO-01", title: "Awaiting your first agreement", state: "AWAITING_FUNDING", amountBaseUnits: "0", updatedAt: new Date().toISOString() } as Agreement]).map((agreement, index) => <article className={`landing-agreement-card landing-agreement-card-${index + 1}`} key={agreement.id}><div className="landing-agreement-topline"><span className={`landing-agreement-state ${stateTone(agreement.state)}`}><i />{stateLabel(agreement.state)}</span><span>{relativeTime(agreement.updatedAt)}</span></div><h3>{agreement.title}</h3><div className="landing-agreement-bottom"><code>{agreement.amountBaseUnits === "0" ? "Live workspace" : `${formatUnits(agreement.amountBaseUnits)} XLAY`}</code><span>{agreement.id}</span></div></article>)}</div></section>
       <section className="landing-proof" aria-label="ProofFlow principles"><div className="landing-proof-intro"><span className="landing-eyebrow">The missing trust layer</span><h2>Commerce needs<br /><em>proof before payment.</em></h2></div><div className="landing-proof-cards"><article><span>01 / EVIDENCE</span><h3>Commit the work.</h3><p>Evidence is submitted as a typed manifest with a canonical content hash before it becomes a decision input.</p></article><article><span>02 / POLICY</span><h3>Gate the release.</h3><p>AI extracts observations. A deterministic policy engine produces RELEASE, REVIEW, or BLOCK.</p></article><article><span>03 / RECEIPT</span><h3>Verify the outcome.</h3><p>A bounded wallet intent meets an X Layer vault and returns an independently inspectable receipt.</p></article></div></section>
       <section className="landing-depth" aria-labelledby="landing-depth-title">
         <div className="landing-depth-copy">
