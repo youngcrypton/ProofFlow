@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { app } from "./index";
+import { app, createApp, parseAllowedOrigins } from "./index";
 
 const address = (suffix: string) => `0x${suffix.padStart(40, "0")}`;
 const request = (path: string, init?: RequestInit) => app.request(`http://localhost${path}`, init);
@@ -28,6 +28,58 @@ async function createFundedReadyAgreement() {
 }
 
 describe("ProofFlow API", () => {
+  it("parses comma-separated CORS origins with whitespace", () => {
+    expect(parseAllowedOrigins(" https://proofflow-inky.vercel.app, http://localhost:5173 ,, ")).toEqual([
+      "https://proofflow-inky.vercel.app",
+      "http://localhost:5173"
+    ]);
+  });
+
+  it("applies CORS before auth and handles preflight for allowed origins", async () => {
+    const previousOrigin = process.env.PROOFFLOW_ALLOWED_ORIGIN;
+    const previousNodeEnv = process.env.NODE_ENV;
+    const previousRequireAuth = process.env.PROOFFLOW_REQUIRE_AUTH;
+    process.env.PROOFFLOW_ALLOWED_ORIGIN = "https://proofflow-inky.vercel.app, http://localhost:5173";
+    process.env.NODE_ENV = "production";
+    delete process.env.PROOFFLOW_REQUIRE_AUTH;
+    try {
+      const protectedApp = createApp();
+      const origin = "https://proofflow-inky.vercel.app";
+      const preflight = await protectedApp.request("http://localhost/api/v1/agreements", {
+        method: "OPTIONS",
+        headers: {
+          Origin: origin,
+          "Access-Control-Request-Method": "POST",
+          "Access-Control-Request-Headers": "content-type, authorization"
+        }
+      });
+      expect(preflight.status).toBe(204);
+      expect(preflight.headers.get("access-control-allow-origin")).toBe(origin);
+      expect(preflight.headers.get("access-control-allow-methods")).toContain("POST");
+      expect(preflight.headers.get("access-control-allow-headers")).toContain("Authorization");
+      expect(preflight.headers.get("access-control-allow-credentials")).toBe("true");
+
+      const unauthorized = await protectedApp.request("http://localhost/api/v1/agreements", {
+        method: "GET",
+        headers: { Origin: origin }
+      });
+      expect(unauthorized.headers.get("access-control-allow-origin")).toBe(origin);
+      expect(unauthorized.status).not.toBe(0);
+
+      const disallowed = await protectedApp.request("http://localhost/health", {
+        headers: { Origin: "https://evil.example" }
+      });
+      expect(disallowed.headers.get("access-control-allow-origin")).toBeNull();
+    } finally {
+      if (previousOrigin === undefined) delete process.env.PROOFFLOW_ALLOWED_ORIGIN;
+      else process.env.PROOFFLOW_ALLOWED_ORIGIN = previousOrigin;
+      if (previousNodeEnv === undefined) delete process.env.NODE_ENV;
+      else process.env.NODE_ENV = previousNodeEnv;
+      if (previousRequireAuth === undefined) delete process.env.PROOFFLOW_REQUIRE_AUTH;
+      else process.env.PROOFFLOW_REQUIRE_AUTH = previousRequireAuth;
+    }
+  });
+
   it("resets a deterministic seeded demo workspace", async () => {
     const response = await request("/api/v1/demo/reset", { method: "POST" });
     const result = await response.json() as { data: { agreement: { id: string; state: string }; manifest: { items: unknown[] }; reviewRun: { status: string } } };

@@ -27,7 +27,18 @@ const MAX_UPLOAD_BODY_BYTES = 12_000_000;
 const RATE_WINDOW_MS = 60_000;
 const RATE_LIMIT = Number(process.env.PROOFFLOW_RATE_LIMIT ?? 60);
 const RPC_TIMEOUT_MS = Number(process.env.PROOFFLOW_RPC_TIMEOUT_MS ?? 8_000);
+const DEFAULT_ALLOWED_ORIGIN = "http://localhost:5173";
+const CORS_ALLOWED_METHODS = ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"];
+const CORS_ALLOWED_HEADERS = ["Content-Type", "Accept", "Authorization", "X-Request-Id"];
 const requestBuckets = new Map<string, { startedAt: number; count: number }>();
+
+export function parseAllowedOrigins(value = process.env.PROOFFLOW_ALLOWED_ORIGIN): string[] {
+  return (value ?? DEFAULT_ALLOWED_ORIGIN)
+    .split(",")
+    .map((origin) => origin.trim())
+    .filter(Boolean);
+}
+
 function clientKey(request: Request): string {
   return request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() || "anonymous";
 }
@@ -42,16 +53,25 @@ function isMultipartUpload(request: Request): boolean {
 
 export function createApp(repository: ProofFlowRepository = new MemoryRepository(), observability = new Observability(), evidenceStore = new EvidenceStore()) {
   const app = new Hono();
-  const allowedOrigin = process.env.PROOFFLOW_ALLOWED_ORIGIN ?? "http://localhost:5173";
+  const allowedOrigins = parseAllowedOrigins();
   const xLayerRpcUrl = process.env.XLAYER_RPC_URL ?? "https://testrpc.xlayer.tech/terigon";
   const xLayerChainId = Number(process.env.XLAYER_CHAIN_ID ?? 1952);
   const vaultAddress = process.env.PROOFFLOW_VAULT_ADDRESS;
   const requireAuth = process.env.NODE_ENV === "production" || process.env.PROOFFLOW_REQUIRE_AUTH === "true";
   const apiToken = process.env.PROOFFLOW_API_TOKEN;
+  console.log(`Allowed Origins: ${allowedOrigins.join(", ") || "(none)"}`);
   app.use("*", cors({
-    origin: allowedOrigin,
-    allowMethods: ["GET", "POST", "OPTIONS"],
-    allowHeaders: ["Content-Type", "Accept", "Authorization", "X-Request-Id"],
+    origin: (origin, c) => {
+      const matchedOrigin = allowedOrigins.includes(origin) ? origin : null;
+      console.log(`Incoming Origin: ${origin || "(none)"}`);
+      console.log(`Matched Origin: ${matchedOrigin ?? "(none)"}`);
+      console.log(`CORS Applied: ${matchedOrigin ? "true" : "false"}`);
+      if (c.req.method === "OPTIONS") console.log("Handled CORS preflight");
+      return matchedOrigin;
+    },
+    allowMethods: CORS_ALLOWED_METHODS,
+    allowHeaders: CORS_ALLOWED_HEADERS,
+    credentials: true,
     maxAge: 600
   }));
   app.use("*", async (c, next) => {
