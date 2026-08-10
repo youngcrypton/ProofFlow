@@ -27,7 +27,7 @@ type AgreementDraft = { title: string; description: string; payer: string; recip
 type SettlementStage = "idle" | "preparing" | "ready" | "awaiting_wallet" | "submitted" | "confirming" | "confirmed" | "failed" | "unknown";
 type View = "landing" | "overview" | "agreements" | "review" | "activity" | "wallet" | "settings";
 
-const API_BASE = import.meta.env.VITE_API_BASE_URL ?? "http://localhost:8787";
+const API_BASE = import.meta.env.VITE_API_BASE_URL ?? "/api-proxy";
 const XLAYER_TESTNET_CHAIN_ID = 1952;
 const XLAYER_TESTNET_CHAIN_HEX = "0x7a0";
 const XLAYER_TESTNET_CONFIG = { chainId: XLAYER_TESTNET_CHAIN_HEX, chainName: "X Layer testnet", nativeCurrency: { name: "OKB", symbol: "OKB", decimals: 18 }, rpcUrls: ["https://testrpc.xlayer.tech/terigon", "https://xlayertestrpc.okx.com/terigon"], blockExplorerUrls: ["https://www.okx.com/web3/explorer/xlayer-test"] };
@@ -68,7 +68,8 @@ async function api<T>(path: string, init?: RequestInit): Promise<T> {
   const headers = new Headers(init?.headers);
   headers.set("Accept", "application/json");
   if (!isMultipart && !headers.has("content-type")) headers.set("content-type", "application/json");
-  const response = await fetch(`${API_BASE}${path}`, { ...init, headers });
+  const requestPath = API_BASE === "/api-proxy" ? `${API_BASE}${path.replace(/^\/api/, "")}` : `${API_BASE}${path}`;
+  const response = await fetch(requestPath, { ...init, headers });
   const body = await response.json() as ApiEnvelope<T>;
   if (!response.ok || body.error) throw new Error(body.error?.message ?? `Request failed (${response.status})`);
   return body.data as T;
@@ -350,6 +351,7 @@ function LandingPage({ statusLabel, network, agreements, walletAddress, onNaviga
       </section>
       <section className="landing-live-agreements" aria-labelledby="landing-live-agreements-title"><div className="landing-live-heading"><span className="landing-eyebrow">Live agreement stream</span><h2 id="landing-live-agreements-title">Proof in motion.</h2><p>Recent commitments stay visible while they move from evidence to settlement.</p></div><div className="landing-agreement-orbit">{(agreements.length ? agreements.slice(0, 4) : [{ id: "DEMO-01", title: "Awaiting your first agreement", state: "AWAITING_FUNDING", amountBaseUnits: "0", updatedAt: new Date().toISOString() } as Agreement]).map((agreement, index) => <article className={`landing-agreement-card landing-agreement-card-${index + 1}`} key={agreement.id}><div className="landing-agreement-topline"><span className={`landing-agreement-state ${stateTone(agreement.state)}`}><i />{stateLabel(agreement.state)}</span><span>{relativeTime(agreement.updatedAt)}</span></div><h3>{agreement.title}</h3><div className="landing-agreement-bottom"><code>{agreement.amountBaseUnits === "0" ? "Live workspace" : `${formatUnits(agreement.amountBaseUnits)} XLAY`}</code><span>{agreement.id}</span></div></article>)}</div></section>
       <section className="landing-proof" aria-label="ProofFlow principles"><div className="landing-proof-intro"><span className="landing-eyebrow">The missing trust layer</span><h2>Commerce needs<br /><em>proof before payment.</em></h2></div><div className="landing-proof-cards"><article><span>01 / EVIDENCE</span><h3>Commit the work.</h3><p>Evidence is submitted as a typed manifest with a canonical content hash before it becomes a decision input.</p></article><article><span>02 / POLICY</span><h3>Gate the release.</h3><p>AI extracts observations. A deterministic policy engine produces RELEASE, REVIEW, or BLOCK.</p></article><article><span>03 / RECEIPT</span><h3>Verify the outcome.</h3><p>A bounded wallet intent meets an X Layer vault and returns an independently inspectable receipt.</p></article></div></section>
+      <section className="landing-how" aria-labelledby="landing-how-title"><div className="landing-how-heading"><span className="landing-eyebrow">New here?</span><h2 id="landing-how-title">How ProofFlow works.</h2><p>Start with the product, not the protocol. ProofFlow protects milestone payments by turning completed work into evidence that can be reviewed before a wallet ever signs.</p></div><div className="landing-how-steps"><article><span>01</span><div><h3>Create the agreement</h3><p>Define the milestone, recipient, amount, deadline, and evidence required for release.</p></div></article><article><span>02</span><div><h3>Submit the proof</h3><p>Upload the evidence. ProofFlow validates, hashes, and records the manifest as the source of truth.</p></div></article><article><span>03</span><div><h3>Review the gate</h3><p>AI observes the evidence. Deterministic policy decides whether the work is ready, blocked, or needs review.</p></div></article><article><span>04</span><div><h3>Authorize and settle</h3><p>When the gate passes, a human reviews the exact transaction in OKX Wallet and X Layer returns the receipt.</p></div></article></div><button className="landing-how-cta" onClick={() => onNavigate("overview")}>Open the product console <span>↗</span></button></section>
       <section className="landing-depth" aria-labelledby="landing-depth-title">
         <div className="landing-depth-copy">
           <span className="landing-eyebrow">The ProofFlow sequence</span>
