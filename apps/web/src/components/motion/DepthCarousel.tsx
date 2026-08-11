@@ -119,7 +119,8 @@ const DepthCarousel = ({
   const dragRef = useRef<DragState | null>(null);
   const wheelTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const autoTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const reducedRef = useRef(false);
+  const reducedRef = useRef(typeof window !== 'undefined' && (window.matchMedia('(prefers-reduced-motion: reduce)').matches || window.matchMedia('(pointer: coarse)').matches));
+  const lowPower = typeof window !== 'undefined' && (window.innerWidth < 768 || window.matchMedia('(pointer: coarse)').matches);
 
   const [active, setActive] = useState(0);
 
@@ -132,7 +133,7 @@ const DepthCarousel = ({
     tiltDirection,
     visibleCards,
     falloff,
-    blur,
+    blur: lowPower ? 0 : blur,
     duration,
     ease,
     loop,
@@ -348,7 +349,7 @@ const DepthCarousel = ({
   );
 
   useEffect(() => {
-    reducedRef.current = typeof window !== 'undefined' && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    reducedRef.current = typeof window !== 'undefined' && (window.matchMedia('(prefers-reduced-motion: reduce)').matches || window.matchMedia('(pointer: coarse)').matches);
     if (!autoplay || reducedRef.current || count < 2) return;
     const root = rootRef.current;
     let hovered = false;

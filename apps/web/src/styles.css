@@ -597,6 +597,7 @@ body { background: #030405; }
 .landing-wallet-arrow { color: #c8f36c; font-size: .9rem; }
 .landing-button-wallet { display: inline-flex; align-items: center; gap: 9px; color: #f1ffd9; border-color: rgba(200, 243, 108, .62); background: linear-gradient(110deg, rgba(200, 243, 108, .18), rgba(125, 211, 252, .09)); box-shadow: 0 0 24px rgba(200, 243, 108, .12); }
 .landing-button-wallet:hover { box-shadow: 0 0 30px rgba(200, 243, 108, .27); }
+.landing-live-agreements, .landing-proof, .landing-how, .landing-depth, .landing-flow { content-visibility: auto; contain-intrinsic-size: 1px 520px; }
 .landing-live-agreements { position: relative; display: grid; grid-template-columns: minmax(220px, .7fr) minmax(0, 1.3fr); gap: clamp(28px, 6vw, 92px); align-items: center; min-height: 315px; padding: 70px 0 82px; border-top: 1px solid rgba(170, 191, 212, .16); }
 .landing-live-heading h2 { margin: 13px 0 14px; color: #f2f6f9; font-size: clamp(2.4rem, 5vw, 5.1rem); line-height: .9; letter-spacing: -.09em; }
 .landing-live-heading p { max-width: 300px; margin: 0; color: #9bafbf; font-size: .87rem; line-height: 1.65; }
@@ -616,7 +617,7 @@ body { background: #030405; }
 .landing-agreement-card h3 { position: relative; z-index: 1; margin: 22px 0 20px; overflow: hidden; color: #edf5f8; font-size: .88rem; line-height: 1.2; text-overflow: ellipsis; white-space: nowrap; }
 .landing-agreement-bottom code { color: #c8f36c; }
 @media (max-width: 900px) { .landing-header-actions { gap: 9px; } .landing-live-agreements { grid-template-columns: 1fr; padding: 62px 0 70px; } .landing-live-heading p { max-width: 560px; } }
-@media (max-width: 640px) { .landing-header-actions .landing-network { display: none; } .landing-wallet-button { min-height: 37px; font-size: .58rem; } .landing-button-wallet { justify-content: center; } .landing-agreement-orbit { grid-template-columns: 1fr; min-height: 0; } .landing-agreement-card, .landing-agreement-card-2, .landing-agreement-card-3, .landing-agreement-card-4 { transform: none; } .landing-agreement-card:nth-child(n+3) { display: none; } }
+@media (max-width: 640px) { .landing-canvas { opacity: .72; } .landing-grid { opacity: .18; background-size: 96px 96px; } .landing-vignette { background: radial-gradient(circle at 52% 33%, transparent 0, rgba(3, 6, 9, .16) 30%, rgba(3, 6, 9, .92) 88%), linear-gradient(90deg, rgba(3, 6, 9, .94), rgba(3, 6, 9, .3)); } .landing-header-actions .landing-network { display: none; } .landing-wallet-button { min-height: 37px; font-size: .58rem; } .landing-button-wallet { justify-content: center; } .landing-agreement-orbit { grid-template-columns: 1fr; min-height: 0; } .landing-agreement-card, .landing-agreement-card-2, .landing-agreement-card-3, .landing-agreement-card-4 { transform: none; } .landing-agreement-card:nth-child(n+3) { display: none; } }
 @media (prefers-reduced-motion: reduce) { .landing-wallet-button, .landing-button-wallet, .landing-agreement-card { transition: none; } }
 
 .landing-how {

@@ -40,6 +40,7 @@ const ProofNetworkField: FC<ProofNetworkFieldProps> = ({
   const dirtyRef = useRef(true);
   const baseRgb = useMemo(() => hexToRgb(baseColor), [baseColor]);
   const activeRgb = useMemo(() => hexToRgb(activeColor), [activeColor]);
+  const lowPower = typeof window !== 'undefined' && (window.innerWidth < 768 || window.matchMedia('(pointer: coarse)').matches || window.matchMedia('(prefers-reduced-motion: reduce)').matches);
 
   const buildGrid = useCallback(() => {
     const wrap = wrapperRef.current;
@@ -48,7 +49,7 @@ const ProofNetworkField: FC<ProofNetworkFieldProps> = ({
     const rect = wrap.getBoundingClientRect();
     const width = Math.max(1, Math.floor(rect.width));
     const height = Math.max(1, Math.floor(rect.height));
-    const dpr = Math.min(window.devicePixelRatio || 1, 1.25);
+    const dpr = lowPower ? 1 : Math.min(window.devicePixelRatio || 1, 1.25);
     canvas.width = Math.floor(width * dpr);
     canvas.height = Math.floor(height * dpr);
     canvas.style.width = `${width}px`;
@@ -66,7 +67,7 @@ const ProofNetworkField: FC<ProofNetworkFieldProps> = ({
       return { cx: startX + x * cell, cy: startY + y * cell };
     });
     dirtyRef.current = true;
-  }, [dotSize, gap]);
+  }, [dotSize, gap, lowPower]);
 
   const draw = useCallback(() => {
     const canvas = canvasRef.current;
@@ -127,15 +128,21 @@ const ProofNetworkField: FC<ProofNetworkFieldProps> = ({
       dirtyRef.current = true;
       scheduleDraw();
     };
-    window.addEventListener('pointermove', onMove, { passive: true });
-    window.addEventListener('pointerleave', onLeave, { passive: true });
+    if (!lowPower) {
+      window.addEventListener('pointermove', onMove, { passive: true });
+      window.addEventListener('pointerleave', onLeave, { passive: true });
+    } else {
+      onLeave();
+    }
     document.addEventListener('visibilitychange', onVisibility);
     scheduleDraw();
     return () => {
       if (rafId !== null) cancelAnimationFrame(rafId);
       observer?.disconnect();
-      window.removeEventListener('pointermove', onMove);
-      window.removeEventListener('pointerleave', onLeave);
+      if (!lowPower) {
+        window.removeEventListener('pointermove', onMove);
+        window.removeEventListener('pointerleave', onLeave);
+      }
       document.removeEventListener('visibilitychange', onVisibility);
     };
   }, [buildGrid, draw, proximity]);
