@@ -279,9 +279,12 @@ export default function Galaxy({
 
     const mesh = new Mesh(gl, { geometry, program });
     let animateId: number;
+    let lastRender = 0;
 
     function update(t: number) {
       animateId = requestAnimationFrame(update);
+      if (document.visibilityState === 'hidden' || t - lastRender < 33) return;
+      lastRender = t;
       if (!disableAnimation) {
         program.uniforms.uTime.value = t * 0.001;
         program.uniforms.uStarSpeed.value = (t * 0.001 * starSpeed) / 10.0;

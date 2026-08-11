@@ -1,13 +1,12 @@
 .pf-blur-text {
   display: inline-block;
-  filter: blur(7px);
   opacity: 0;
   transform: translateY(8px);
-  transition: filter 420ms ease, opacity 420ms ease, transform 420ms ease;
+  transition: opacity 420ms ease, transform 420ms ease;
 }
 
-.pf-blur-text.is-visible { filter: blur(0); opacity: 1; transform: none; }
+.pf-blur-text.is-visible { opacity: 1; transform: none; }
 
 @media (prefers-reduced-motion: reduce) {
-  .pf-blur-text { filter: none; opacity: 1; transform: none; transition: none; }
+  .pf-blur-text { opacity: 1; transform: none; transition: none; }
 }
