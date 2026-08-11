@@ -50,19 +50,23 @@ describe("XLayerClient", () => {
         ? "0x7a0"
         : method === "eth_getTransactionByHash"
         ? { hash: txHash, from: payer, to: vault, value: "0x0", input: "0x86d1a69f" }
-        : method === "eth_getTransactionReceipt"
-          ? { transactionHash: txHash, blockNumber: "0x10", status: "0x1", from: payer, to: vault, logs: [{ address: vault, topics: [releaseTopic, `0x${"0".repeat(24)}${recipient.slice(2)}`], data: "0x3e8" }] }
-          : null;
+                  : method === "eth_getTransactionReceipt"
+          ? { transactionHash: txHash, blockNumber: "0x10", status: "0x1", from: payer, to: vault, logs: [{ address: vault, topics: [releaseTopic, `0x${"0".repeat(24)}${recipient.slice(2)}`], data: `0x${"0".repeat(61)}3e8` }] }
+          : method === "eth_blockNumber"
+            ? "0x10"
+            : null;
       return new Response(JSON.stringify({ jsonrpc: "2.0", id: 1, result }), { headers: { "content-type": "application/json" } });
     };
     const result = await new ProofFlowVaultClient({ rpcUrl: "https://example.com", vaultAddress: vault, fetcher }).verifyReleaseTransaction({ transactionHash: txHash as `0x${string}`, payer, recipient, amountBaseUnits: "1000" });
     expect(result.receipt.status).toBe("0x1");
+    expect(result.confirmationDepth).toBe(1n);
+    expect(result.releaseEventVerified).toBe(true);
   });
 
   it("rejects a successful transaction with the wrong method", async () => {
     const fetcher: Fetcher = async (_input, init) => {
       const method = (JSON.parse(String(init?.body)) as { method: string }).method;
-      const result = method === "eth_chainId" ? "0x7a0" : method === "eth_getTransactionByHash" ? { hash: `0x${"ab".repeat(32)}`, from: "0x0000000000000000000000000000000000000001", to: "0x00000000000000000000000000000000000000aa", value: "0x0", input: "0xdeadbeef" } : null;
+      const result = method === "eth_chainId" ? "0x7a0" : method === "eth_getTransactionByHash" ? { hash: `0x${"ab".repeat(32)}`, from: "0x0000000000000000000000000000000000000001", to: "0x00000000000000000000000000000000000000aa", value: "0x0", input: "0xdeadbeef" } : method === "eth_getTransactionReceipt" ? null : method === "eth_blockNumber" ? "0x10" : null;
       return new Response(JSON.stringify({ jsonrpc: "2.0", id: 1, result }), { headers: { "content-type": "application/json" } });
     };
     await expect(new ProofFlowVaultClient({ rpcUrl: "https://example.com", vaultAddress: "0x00000000000000000000000000000000000000aa", fetcher }).verifyReleaseTransaction({ transactionHash: `0x${"ab".repeat(32)}` as `0x${string}`, payer: "0x0000000000000000000000000000000000000001", recipient: "0x0000000000000000000000000000000000000002", amountBaseUnits: "1000" })).rejects.toThrow();

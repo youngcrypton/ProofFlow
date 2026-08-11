@@ -36,6 +36,13 @@ export interface TransactionReceipt {
   logs: Array<{ address: `0x${string}`; topics: `0x${string}`[]; data: `0x${string}` }>;
 }
 
+export type ReleaseVerification = {
+  receipt: TransactionReceipt;
+  transaction: { hash: `0x${string}`; from: `0x${string}`; to: `0x${string}` | null; input: `0x${string}`; value: bigint };
+  confirmationDepth: bigint;
+  releaseEventVerified: boolean;
+};
+
 const TransactionReceiptSchema = z.object({
   transactionHash: z.string().regex(/^0x[0-9a-f]{64}$/i),
   blockNumber: z.string(),
@@ -190,6 +197,8 @@ export interface VaultSnapshot {
   balance: bigint;
 }
 
+export const MIN_RELEASE_CONFIRMATIONS = 1n;
+
 export interface VaultTransactionPreview {
   to: `0x${string}`;
   value: bigint;
@@ -259,26 +268,37 @@ export class ProofFlowVaultClient extends XLayerClient {
   }
 
 
-  async verifyReleaseTransaction(input: { transactionHash: `0x${string}`; payer: string; recipient: string; amountBaseUnits: string }): Promise<{ receipt: TransactionReceipt; transaction: { hash: `0x${string}`; from: `0x${string}`; to: `0x${string}` | null; input: `0x${string}`; value: bigint } }> {
+  async verifyReleaseIntentTransaction(input: { transactionHash: `0x${string}`; payer: string }): Promise<{ hash: `0x${string}`; from: `0x${string}`; to: `0x${string}` | null; input: `0x${string}`; value: bigint }> {
     await this.assertExpectedNetwork();
-    const [transaction, receipt] = await Promise.all([this.getTransaction(input.transactionHash), this.getTransactionReceipt(input.transactionHash)]);
+    const transaction = await this.getTransaction(input.transactionHash);
+    if (!transaction) throw new Error("Transaction is not yet available on X Layer");
+    if (transaction.hash.toLowerCase() !== input.transactionHash.toLowerCase()) throw new Error("Transaction hash does not match the requested settlement intent");
+    assertReleaseCall(transaction, this.vaultAddress, input.payer);
+    return transaction;
+  }
+
+  async verifyReleaseTransaction(input: { transactionHash: `0x${string}`; payer: string; recipient: string; amountBaseUnits: string; expectedBlockNumber?: bigint }): Promise<ReleaseVerification> {
+    await this.assertExpectedNetwork();
+    const [transaction, receipt, latestBlock] = await Promise.all([this.getTransaction(input.transactionHash), this.getTransactionReceipt(input.transactionHash), this.getBlockNumber()]);
     if (!transaction || !receipt) throw new Error("Transaction is not yet available on X Layer");
-    if (transaction.from.toLowerCase() !== input.payer.toLowerCase() || receipt.from.toLowerCase() !== input.payer.toLowerCase()) throw new Error("Transaction sender does not match agreement payer");
-    if (transaction.to?.toLowerCase() !== this.vaultAddress.toLowerCase() || receipt.to?.toLowerCase() !== this.vaultAddress.toLowerCase()) throw new Error("Transaction target does not match ProofFlow vault");
-    if (transaction.value !== 0n) throw new Error("Release transaction must not transfer native value");
-    const decoded = decodeFunctionData({ abi: PROOFFLOW_VAULT_ABI, data: transaction.input });
-    if (decoded.functionName !== "release") throw new Error("Transaction does not call vault release");
+    if (input.expectedBlockNumber !== undefined && receipt.blockNumber !== input.expectedBlockNumber) throw new Error("Transaction block does not match the previously verified receipt");
+    if (transaction.hash.toLowerCase() !== input.transactionHash.toLowerCase() || receipt.transactionHash.toLowerCase() !== input.transactionHash.toLowerCase()) throw new Error("Transaction hash does not match the requested settlement intent");
+    assertReleaseCall(transaction, this.vaultAddress, input.payer);
+    if (receipt.from.toLowerCase() !== input.payer.toLowerCase() || receipt.to?.toLowerCase() !== this.vaultAddress.toLowerCase()) throw new Error("Receipt parties do not match the release intent");
     if (receipt.status !== "0x1") throw new Error("Release transaction failed on X Layer");
+    const confirmationDepth = latestBlock < receipt.blockNumber ? 0n : latestBlock - receipt.blockNumber + 1n;
+    if (confirmationDepth < MIN_RELEASE_CONFIRMATIONS) throw new Error("Release transaction does not have enough confirmations");
     const releaseTopic = keccak256(toBytes("Released(address,uint256)"));
     const event = receipt.logs.find((log) => log.address.toLowerCase() === this.vaultAddress.toLowerCase() && log.topics[0]?.toLowerCase() === releaseTopic.toLowerCase());
     if (!event || event.topics.length < 2) throw new Error("Successful release event not found");
     const recipientTopic = event.topics[1];
     if (!recipientTopic) throw new Error("Release recipient event topic missing");
     const releasedRecipient = `0x${recipientTopic.slice(-40)}`;
+    if (!/^0x[0-9a-f]{64}$/i.test(event.data)) throw new Error("Release amount event data is invalid");
     const releasedAmount = BigInt(event.data);
     if (releasedRecipient.toLowerCase() !== input.recipient.toLowerCase()) throw new Error("Release recipient does not match agreement");
     if (releasedAmount !== BigInt(input.amountBaseUnits)) throw new Error("Release amount does not match agreement");
-    return { receipt, transaction };
+    return { receipt, transaction, confirmationDepth, releaseEventVerified: true };
   }
 
   async assertMatchesAgreement(input: { payer: string; recipient: string; amountBaseUnits: string; policyHash: string }): Promise<VaultSnapshot> {
@@ -289,6 +309,14 @@ export class ProofFlowVaultClient extends XLayerClient {
     if (snapshot.policyHash.toLowerCase() !== input.policyHash.toLowerCase()) throw new Error("Vault policy hash does not match agreement");
     return snapshot;
   }
+}
+
+function assertReleaseCall(transaction: { from: `0x${string}`; to: `0x${string}` | null; input: `0x${string}`; value: bigint }, vaultAddress: string, payer: string): void {
+  if (transaction.from.toLowerCase() !== payer.toLowerCase()) throw new Error("Transaction sender does not match agreement payer");
+  if (transaction.to?.toLowerCase() !== vaultAddress.toLowerCase()) throw new Error("Transaction target does not match ProofFlow vault");
+  if (transaction.value !== 0n) throw new Error("Release transaction must not transfer native value");
+  const decoded = decodeFunctionData({ abi: PROOFFLOW_VAULT_ABI, data: transaction.input });
+  if (decoded.functionName !== "release") throw new Error("Transaction does not call vault release");
 }
 
 function normalizeBytes32(value: string): `0x${string}` {

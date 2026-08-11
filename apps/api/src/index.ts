@@ -402,19 +402,23 @@ export function createApp(repository: ProofFlowRepository = new MemoryRepository
   app.post("/api/v1/settlement-intents/:id/authorization", async (c) => {
     const intent = repository.getSettlementIntent(c.req.param("id"));
     if (!intent) return c.json({ error: { code: "NOT_FOUND", message: "Settlement intent not found." } }, 404);
-    if (intent.state !== "CREATED" && intent.state !== "AWAITING_AUTHORIZATION") return c.json({ error: { code: "INVALID_STATE", message: "Settlement intent is no longer awaiting authorization." } }, 409);
     const body = z.object({ walletAddress: z.string().regex(/^0x[a-fA-F0-9]{40}$/), transactionHash: z.string().regex(/^0x[a-fA-F0-9]{64}$/), chainId: z.number().int().positive() }).safeParse(await c.req.json().catch(() => null));
     if (!body.success) return c.json({ error: { code: "VALIDATION_ERROR", message: "Authorization receipt is invalid.", fields: body.error.flatten().fieldErrors } }, 400);
+    if (intent.transactionHash && intent.transactionHash.toLowerCase() !== body.data.transactionHash.toLowerCase()) return c.json({ error: { code: "TRANSACTION_HASH_CONFLICT", message: "This settlement intent is already bound to a different transaction." } }, 409);
+    if (intent.state !== "CREATED" && intent.state !== "AWAITING_AUTHORIZATION") {
+      if (intent.transactionHash?.toLowerCase() === body.data.transactionHash.toLowerCase() && intent.authorizedBy?.toLowerCase() === body.data.walletAddress.toLowerCase()) return c.json({ data: { intent, authorization: body.data }, idempotent: true });
+      return c.json({ error: { code: "INVALID_STATE", message: "Settlement intent is no longer awaiting authorization." } }, 409);
+    }
     const expectedChainId = xLayerChainId;
     if (body.data.chainId !== expectedChainId) return c.json({ error: { code: "WRONG_NETWORK", message: `Expected X Layer chain ${expectedChainId}.` } }, 409);
-    if (body.data.walletAddress.toLowerCase() !== intent.recipient.toLowerCase() && body.data.walletAddress.toLowerCase() !== (repository.getAgreement(intent.agreementId)?.payer ?? "").toLowerCase()) return c.json({ error: { code: "UNAUTHORIZED_WALLET", message: "Wallet is not a party to this agreement." } }, 403);
-    const now = new Date().toISOString();
-    if (!vaultAddress || !/^0x[a-fA-F0-9]{40}$/.test(vaultAddress)) return c.json({ error: { code: "VAULT_NOT_CONFIGURED", message: "ProofFlow vault address is not configured." } }, 503);
     const agreement = repository.getAgreement(intent.agreementId);
     if (!agreement) return c.json({ error: { code: "NOT_FOUND", message: "Agreement not found." } }, 404);
+    if (body.data.walletAddress.toLowerCase() !== agreement.payer.toLowerCase()) return c.json({ error: { code: "UNAUTHORIZED_WALLET", message: "Only the agreement payer can authorize the native vault release." } }, 403);
+    const now = new Date().toISOString();
+    if (!vaultAddress || !/^0x[a-fA-F0-9]{40}$/.test(vaultAddress)) return c.json({ error: { code: "VAULT_NOT_CONFIGURED", message: "ProofFlow vault address is not configured." } }, 503);
     try {
-      const verifier = new ProofFlowVaultClient({ rpcUrl: xLayerRpcUrl, expectedChainId, vaultAddress: vaultAddress as `0x${string}` });
-      await verifier.verifyReleaseTransaction({ transactionHash: body.data.transactionHash as `0x${string}`, payer: agreement.payer, recipient: agreement.recipient, amountBaseUnits: intent.amountBaseUnits });
+      const verifier = new ProofFlowVaultClient({ rpcUrl: xLayerRpcUrl, expectedChainId, vaultAddress: vaultAddress as `0x${string}`, timeoutMs: RPC_TIMEOUT_MS, onRpcMetric: (metric) => observability.recordRpc(metric) });
+      await verifier.verifyReleaseIntentTransaction({ transactionHash: body.data.transactionHash as `0x${string}`, payer: agreement.payer });
     } catch (error) {
       return c.json({ error: { code: "AUTHORIZATION_UNVERIFIED", message: error instanceof Error ? error.message : "Could not verify the authorized transaction." } }, 409);
     }
@@ -429,6 +433,8 @@ export function createApp(repository: ProofFlowRepository = new MemoryRepository
     if (!intent) return c.json({ error: { code: "NOT_FOUND", message: "Settlement intent not found." } }, 404);
     const body = z.object({ transactionHash: z.string().regex(/^0x[a-fA-F0-9]{64}$/) }).safeParse(await c.req.json().catch(() => null));
     if (!body.success) return c.json({ error: { code: "VALIDATION_ERROR", message: "Transaction hash is invalid.", fields: body.error.flatten().fieldErrors } }, 400);
+    if (!intent.transactionHash) return c.json({ error: { code: "AUTHORIZATION_REQUIRED", message: "Authorize this exact settlement intent in the payer wallet before reconciliation." } }, 409);
+    if (intent.transactionHash.toLowerCase() !== body.data.transactionHash.toLowerCase()) return c.json({ error: { code: "TRANSACTION_HASH_CONFLICT", message: "The reconciliation hash does not match the authorized settlement intent." } }, 409);
     const agreement = repository.getAgreement(intent.agreementId);
     if (!agreement) return c.json({ error: { code: "NOT_FOUND", message: "Agreement not found." } }, 404);
     try {
@@ -440,6 +446,7 @@ export function createApp(repository: ProofFlowRepository = new MemoryRepository
         observability.recordReconciliation("PENDING");
         return c.json({ data: { intent, status: "PENDING", receipt: null } });
       }
+      await verifier.verifyReleaseTransaction({ transactionHash: body.data.transactionHash as `0x${string}`, payer: agreement.payer, recipient: agreement.recipient, amountBaseUnits: intent.amountBaseUnits, expectedBlockNumber: receipt.blockNumber });
       if (!receipt.to || receipt.to.toLowerCase() !== vaultAddress.toLowerCase()) return c.json({ error: { code: "RECEIPT_TARGET_MISMATCH", message: "Receipt target does not match the configured ProofFlow vault." } }, 409);
       if (receipt.from.toLowerCase() !== agreement.payer.toLowerCase()) return c.json({ error: { code: "RECEIPT_SENDER_MISMATCH", message: "Receipt sender does not match the agreement payer." } }, 409);
       if (intent.state === "CONFIRMED" || intent.state === "FAILED") {
