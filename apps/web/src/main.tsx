@@ -1,6 +1,7 @@
 import { StrictMode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { FormEvent, ReactNode } from "react";
 import { createRoot } from "react-dom/client";
+import { Analytics } from "@vercel/analytics/react";
 import AnimatedContent from "./components/motion/AnimatedContent";
 import BlurText from "./components/motion/BlurText";
 import CountUp from "./components/motion/CountUp";
@@ -428,7 +429,7 @@ function stageTitle(stage: SettlementStage) { const labels: Record<SettlementSta
 function stageCopy(stage: SettlementStage) { const copy: Record<SettlementStage, string> = { idle: "", preparing: "Checking the exact intent and network.", ready: "Ready for your review.", awaiting_wallet: "Confirm the exact transaction in OKX Wallet.", submitted: "Transaction submitted; receipt not final yet.", confirming: "ProofFlow is checking the receipt and release event.", confirmed: "Verified receipt reconciled on X Layer.", failed: "The chain did not confirm this release.", unknown: "Confirmation uncertain. Refresh before retrying." }; return copy[stage]; }
 function stageIcon(stage: SettlementStage) { return stage === "confirmed" ? "✓" : stage === "failed" ? "!" : stage === "unknown" ? "?" : stage === "submitted" || stage === "confirming" ? "◌" : "·"; }
 
-createRoot(document.getElementById("root")!).render(<StrictMode><AppErrorBoundary><App /></AppErrorBoundary></StrictMode>);
+createRoot(document.getElementById("root")!).render(<StrictMode><AppErrorBoundary><App /><Analytics /></AppErrorBoundary></StrictMode>);
 
 function CreateAgreementModal({ onClose, onCreated }: { onClose: () => void; onCreated: (agreement: Agreement) => Promise<void> }) {
   const [draft, setDraft] = useState<AgreementDraft>({ title: "", description: "", payer: "0x0000000000000000000000000000000000000001", recipient: "0x0000000000000000000000000000000000000002", tokenAddress: "0x0000000000000000000000000000000000000003", amountBaseUnits: "1000000000000000000", deadline: "2026-09-30T17:00:00.000Z", evidenceType: "invoice" });
