@@ -15,3 +15,5 @@ data/*.sqlite
 data/*.sqlite-*
 contracts/lib/
 apps/api/data/
+
+data/evidence/
