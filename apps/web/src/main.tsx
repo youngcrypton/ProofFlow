@@ -71,7 +71,11 @@ async function api<T>(path: string, init?: RequestInit): Promise<T> {
   const requestPath = API_BASE === "/api-proxy" ? `${API_BASE}${path.replace(/^\/api/, "")}` : `${API_BASE}${path}`;
   const response = await fetch(requestPath, { ...init, headers });
   const body = await response.json() as ApiEnvelope<T>;
-  if (!response.ok || body.error) throw new Error(body.error?.message ?? `Request failed (${response.status})`);
+  if (!response.ok || body.error) {
+    const error = new Error(body.error?.message ?? `Request failed (${response.status})`) as Error & { fields?: Record<string, string[]> };
+    if (body.error && "fields" in body.error) error.fields = (body.error as typeof body.error & { fields?: Record<string, string[]> }).fields;
+    throw error;
+  }
   return body.data as T;
 }
 
@@ -295,7 +299,7 @@ function App() {
 
   if (activeView === "landing") return <>
     <LandingPage statusLabel={statusLabel} network={network} onNavigate={navigate} onCreate={() => setCreateOpen(true)} agreements={agreements} walletAddress={walletAddress} onConnect={() => void connectWallet()} />
-    {createOpen && <CreateAgreementModal onClose={() => setCreateOpen(false)} onCreated={handleCreated} />}
+    {createOpen && <CreateAgreementModal onClose={() => setCreateOpen(false)} onCreated={handleCreated} walletAddress={walletAddress} />}
   </>;
 
   return <div className="app-shell phase3-app">
@@ -310,7 +314,7 @@ function App() {
       {notice && <div className={`inline-banner ${notice.kind}`} role="status" aria-live="polite"><span>{notice.kind === "danger" ? "!" : notice.kind === "success" ? "✓" : "i"}</span><p>{notice.text}</p><button className="banner-close" aria-label="Dismiss notification" onClick={() => setNotice(null)}>×</button></div>}
       <div className="page-transition" key={activeView}>{pageContent}</div>
       <footer className="app-footer" aria-label="ProofFlow resources"><div className="footer-brand"><span className="brand-mark">P</span><div><strong>ProofFlow</strong><small>Enterprise trust infrastructure</small></div></div><div className="footer-links"><div><b>Platform</b><button onClick={() => navigate("overview")}>Overview</button><button onClick={() => navigate("agreements")}>Agreements</button><button onClick={() => navigate("review")}>Reviews</button></div><div><b>Network</b><button onClick={() => navigate("wallet")}>OKX Wallet</button><button onClick={() => navigate("wallet")}>X Layer</button><button onClick={() => navigate("activity")}>Explorer record</button></div><div><b>Resources</b><button onClick={() => navigate("settings")}>Safeguards</button><button onClick={() => navigate("activity")}>Activity</button><button onClick={() => navigate("settings")}>Status</button></div></div><div className="footer-meta"><span>Testnet-first · human authorized</span><span>ProofFlow v0.1.0</span></div></footer>
-      {createOpen && <CreateAgreementModal onClose={() => setCreateOpen(false)} onCreated={handleCreated} />}
+      {createOpen && <CreateAgreementModal onClose={() => setCreateOpen(false)} onCreated={handleCreated} walletAddress={walletAddress} />}
       {evidenceOpen && selected && <EvidenceModal agreement={selected} onClose={() => setEvidenceOpen(false)} onSubmitted={handleEvidenceSubmitted} />}
       {releaseOpen && selected && detail?.chain && <ReleaseModal agreement={selected} chain={detail.chain} decision={detail.decision} manifest={detail.manifest} walletAddress={walletAddress} walletChainId={walletChainId} walletBusy={walletBusy} walletError={walletError} stage={settlementStage} transactionHash={settlementHash} onClose={() => setReleaseOpen(false)} onConnect={() => void connectWallet()} onSwitchNetwork={() => void switchWalletNetwork()} onAuthorize={() => void authorizeRelease(selected.id)} />}
     </main>
@@ -408,8 +412,19 @@ function AppErrorBoundary({ children }: { children: ReactNode }) { return <>{chi
 
 function Modal({ title, eyebrow, onClose, closeDisabled = false, children }: { title: string; eyebrow: string; onClose: () => void; closeDisabled?: boolean; children: ReactNode }) { const modalRef = useRef<HTMLElement | null>(null); useEffect(() => { const previous = document.activeElement as HTMLElement | null; modalRef.current?.querySelector<HTMLElement>("button, input, select, textarea, summary")?.focus(); const onKey = (event: KeyboardEvent) => { if (event.key === "Escape" && !closeDisabled) onClose(); }; document.addEventListener("keydown", onKey); return () => { document.removeEventListener("keydown", onKey); previous?.focus?.(); }; }, [closeDisabled, onClose]); return <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget && !closeDisabled) onClose(); }}><section className="modal" ref={modalRef} role="dialog" aria-modal="true" aria-labelledby="modal-title"><button className="modal-close" aria-label="Close dialog" disabled={closeDisabled} onClick={onClose}>×</button><span className="eyebrow">{eyebrow}</span><h2 id="modal-title">{title}</h2>{children}</section></div>; }
 function ModalActions({ onClose, busy, submitLabel }: { onClose: () => void; busy: boolean; submitLabel: string }) { return <div className="modal-actions"><button type="button" className="button secondary" onClick={onClose}>Cancel</button><button type="submit" className="button primary" disabled={busy}>{busy ? "Working…" : submitLabel}</button></div>; }
-function Field({ label, value, onChange, placeholder, required = false, textarea = false, select = false, options = [], type = "text" }: { label: string; value: string; onChange: (value: string) => void; placeholder?: string; required?: boolean; textarea?: boolean; select?: boolean; options?: string[]; type?: string }) { return <label className="field"><span>{label}</span>{select ? <select value={value} onChange={(event) => onChange(event.target.value)} required={required}>{options.map((option) => <option value={option} key={option}>{option.replaceAll("_", " ")}</option>)}</select> : textarea ? <textarea value={value} onChange={(event) => onChange(event.target.value)} placeholder={placeholder} required={required} rows={3} /> : <input type={type} value={value} onChange={(event) => onChange(event.target.value)} placeholder={placeholder} required={required} />}</label>; }
+function Field({ id, label, value, onChange, placeholder, helper, error, required = false, textarea = false, select = false, options = [], type = "text", autoFocus = false, min, max, step }: { id?: string; label: string; value: string; onChange: (value: string) => void; placeholder?: string; helper?: string; error?: string; required?: boolean; textarea?: boolean; select?: boolean; options?: string[]; type?: string; autoFocus?: boolean; min?: string; max?: string; step?: string }) {
+  const describedBy = [helper && `${id ?? label}-help`, error && `${id ?? label}-error`].filter(Boolean).join(" ") || undefined;
+  return <label className={`field ${error ? "has-error" : ""}`}><span>{label}{required && <i aria-hidden="true">*</i>}</span>{select ? <select id={id} value={value} onChange={(event) => onChange(event.target.value)} required={required} aria-invalid={Boolean(error)} aria-describedby={describedBy} autoFocus={autoFocus}>{options.map((option) => <option value={option} key={option}>{option.replaceAll("_", " ")}</option>)}</select> : textarea ? <textarea id={id} value={value} onChange={(event) => onChange(event.target.value)} placeholder={placeholder} required={required} rows={4} aria-invalid={Boolean(error)} aria-describedby={describedBy} autoFocus={autoFocus} /> : <input id={id} type={type} value={value} onChange={(event) => onChange(event.target.value)} placeholder={placeholder} required={required} aria-invalid={Boolean(error)} aria-describedby={describedBy} autoFocus={autoFocus} min={min} max={max} step={step} />}{helper && <small id={`${id ?? label}-help`} className="field-help">{helper}</small>}{error && <small id={`${id ?? label}-error`} className="field-error" role="alert">{error}</small>}</label>;
+}
 
+function baseUnitsFromDisplay(value: string): string {
+  const normalized = value.trim();
+  if (!/^\d+(\.\d{0,18})?$/.test(normalized)) return "";
+  const parts = normalized.split(".");
+  const whole = parts[0] ?? "0";
+  const fraction = parts[1] ?? "";
+  return (BigInt(whole) * 1_000_000_000_000_000_000n + BigInt(fraction.padEnd(18, "0") || "0")).toString();
+}
 function formatUnits(value: string | bigint) { const raw = BigInt(value); const units = Number(raw) / 1e18; return units >= 1 ? units.toLocaleString("en-US", { maximumFractionDigits: 4 }) : raw.toString(); }
 function shortAddress(value: string) { return value ? `${value.slice(0, 6)}…${value.slice(-4)}` : "—"; }
 function shortHash(value: string) { return value ? `${value.slice(0, 10)}…${value.slice(-8)}` : "—"; }
@@ -431,38 +446,120 @@ function stageIcon(stage: SettlementStage) { return stage === "confirmed" ? "✓
 
 createRoot(document.getElementById("root")!).render(<StrictMode><AppErrorBoundary><App /><Analytics /></AppErrorBoundary></StrictMode>);
 
-function CreateAgreementModal({ onClose, onCreated }: { onClose: () => void; onCreated: (agreement: Agreement) => Promise<void> }) {
-  const evidenceOptions: EvidenceType[] = ["invoice", "purchase_order", "signed_approval", "delivery_receipt", "api_response", "status_update"];
-  const [step, setStep] = useState<3 | 4>(3);
-  const [draft, setDraft] = useState<AgreementDraft>({ title: "", description: "", payer: "0x0000000000000000000000000000000000000001", recipient: "0x0000000000000000000000000000000000000002", tokenAddress: "0x0000000000000000000000000000000000000003", amountBaseUnits: "1000000000000000000", deadline: new Date(Date.now() + 30 * 86400000).toISOString(), evidenceTypes: ["invoice"], minimumConfidenceBps: 9000, releaseAmountBaseUnits: "1000000000000000000", policyVersion: "proof-v1" });
+function CreateAgreementModal({ onClose, onCreated, walletAddress }: { onClose: () => void; onCreated: (agreement: Agreement) => Promise<void>; walletAddress: string | null }) {
+  const evidenceOptions: Array<{ type: EvidenceType; label: string; description: string }> = [
+    { type: "invoice", label: "Invoice", description: "Confirms the agreed invoice exists." },
+    { type: "purchase_order", label: "Purchase order", description: "Confirms the purchase was formally requested." },
+    { type: "signed_approval", label: "Signed approval", description: "Confirms the required person approved the work." },
+    { type: "delivery_receipt", label: "Delivery receipt", description: "Confirms the goods or service were delivered." },
+    { type: "api_response", label: "API response", description: "Confirms the required system response was received." },
+    { type: "status_update", label: "Status update", description: "Confirms the expected status was reached." },
+  ];
+  const nativeTokenAddress = "0x0000000000000000000000000000000000000000";
+  const [step, setStep] = useState<1 | 2 | 3 | 4>(1);
+  const [draft, setDraft] = useState<AgreementDraft>({ title: "", description: "", payer: walletAddress ?? "", recipient: "", tokenAddress: nativeTokenAddress, amountBaseUnits: "", deadline: "", evidenceTypes: [], minimumConfidenceBps: 9000, releaseAmountBaseUnits: "", policyVersion: "proof-v1" });
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const update = <K extends keyof AgreementDraft>(key: K, value: AgreementDraft[K]) => setDraft((current) => ({ ...current, [key]: value }));
+  const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
+
+  useEffect(() => {
+    if (walletAddress && !draft.payer) update("payer", walletAddress);
+  }, [walletAddress]);
+
+  const update = <K extends keyof AgreementDraft>(key: K, value: AgreementDraft[K]) => {
+    setDraft((current) => ({ ...current, [key]: value }));
+    setFieldErrors((current) => { const next = { ...current }; delete next[key]; return next; });
+    setError(null);
+  };
+  const setStepAndFocus = (next: 1 | 2 | 3 | 4) => { setError(null); setStep(next); window.setTimeout(() => document.getElementById(`agreement-step-${next}`)?.focus(), 0); };
   const toggleEvidence = (type: EvidenceType) => update("evidenceTypes", draft.evidenceTypes.includes(type) ? draft.evidenceTypes.filter((item) => item !== type) : [...draft.evidenceTypes, type]);
-  const policy = { version: draft.policyVersion, requiredEvidence: draft.evidenceTypes, minimumConfidenceBps: draft.minimumConfidenceBps, releaseAmountBaseUnits: draft.releaseAmountBaseUnits, deadline: new Date(draft.deadline).toISOString() };
-  const body = { title: draft.title.trim(), description: draft.description.trim(), payer: draft.payer.trim(), recipient: draft.recipient.trim(), tokenAddress: draft.tokenAddress.trim(), amountBaseUnits: draft.amountBaseUnits.trim(), deadline: policy.deadline, policy };
-  async function publish(event: FormEvent) { event.preventDefault(); if (draft.evidenceTypes.length === 0) { setError("Select at least one required evidence type."); return; } setBusy(true); setError(null); try { const agreement = await api<Agreement>("/api/v1/agreements", { method: "POST", body: JSON.stringify(body) }); await onCreated(agreement); } catch (cause) { setError(cause instanceof Error ? cause.message : "Agreement could not be published."); } finally { setBusy(false); } }
-  return <Modal title={step === 3 ? "Define the release gate" : "Review and publish"} eyebrow={`New agreement · step ${step} of 4`} onClose={onClose}>
-    <div className="wizard-progress" aria-label="Agreement creation progress"><span className={step === 3 ? "active" : "complete"}>03 <b>Policy</b></span><i>→</i><span className={step === 4 ? "active" : ""}>04 <b>Review and publish</b></span></div>
-    <form className="modal-form" onSubmit={(event) => void publish(event)}>
-      {step === 3 ? <>
-        <div className="wizard-intro"><b>Make the release decision explicit.</b><p>ProofFlow checks the evidence you choose, applies a deterministic confidence threshold, and keeps the final wallet authorization in your hands.</p></div>
-        <Field label="Policy version" value={draft.policyVersion} placeholder="e.g. proof-v1" onChange={(value) => update("policyVersion", value)} required />
-        <fieldset className="evidence-options"><legend>Required evidence</legend><p className="form-note">Choose every proof item that must be present before release.</p><div className="evidence-option-grid">{evidenceOptions.map((type) => <label className={`evidence-option ${draft.evidenceTypes.includes(type) ? "selected" : ""}`} key={type}><input type="checkbox" checked={draft.evidenceTypes.includes(type)} onChange={() => toggleEvidence(type)} /><span><b>{type.replaceAll("_", " ")}</b><small>What happens if this fails? The gate blocks release until this evidence is present.</small></span></label>)}</div></fieldset>
-        <div className="form-grid"><Field label="Minimum review confidence (bps)" value={String(draft.minimumConfidenceBps)} type="number" onChange={(value) => update("minimumConfidenceBps", Number(value))} required /><Field label="Release amount (base units)" value={draft.releaseAmountBaseUnits} onChange={(value) => update("releaseAmountBaseUnits", value)} required /></div>
-        <div className="policy-callout"><b>Policy boundary</b><p>AI may observe submitted evidence, but it cannot authorize a transfer. Only a passing policy result and explicit wallet approval can move this agreement toward release.</p></div>
+  const amountBaseUnits = baseUnitsFromDisplay(draft.amountBaseUnits);
+  const policy = { version: draft.policyVersion.trim(), requiredEvidence: draft.evidenceTypes, minimumConfidenceBps: draft.minimumConfidenceBps, releaseAmountBaseUnits: amountBaseUnits, deadline: draft.deadline ? new Date(draft.deadline).toISOString() : "" };
+  const body = { title: draft.title.trim(), description: draft.description.trim(), payer: draft.payer.trim(), recipient: draft.recipient.trim(), tokenAddress: nativeTokenAddress, amountBaseUnits, deadline: policy.deadline, policy };
+
+  function validateAddress(value: string, label: string): string | null { return /^0x[a-fA-F0-9]{40}$/.test(value.trim()) ? null : `Enter a valid ${label.toLowerCase()} wallet address.`; }
+  function validateCurrentStep(): boolean {
+    const next: Record<string, string> = {};
+    if (step === 1) {
+      if (!draft.title.trim()) next.title = "Add a name for this agreement.";
+      if (!draft.description.trim()) next.description = "Tell us what needs to be completed.";
+      if (draft.description.trim().length > 1000) next.description = "Keep the description under 1,000 characters.";
+    }
+    if (step === 2) {
+      const payerError = validateAddress(draft.payer, "payer");
+      const recipientError = validateAddress(draft.recipient, "recipient");
+      if (payerError) next.payer = payerError;
+      if (recipientError) next.recipient = recipientError;
+      if (!amountBaseUnits || BigInt(amountBaseUnits) <= 0n) next.amountBaseUnits = "Enter an amount greater than zero.";
+      if (!draft.deadline || Number.isNaN(new Date(draft.deadline).getTime()) || new Date(draft.deadline).getTime() <= Date.now()) next.deadline = "Choose a future deadline.";
+    }
+    if (step === 3 && draft.evidenceTypes.length === 0) next.evidenceTypes = "Select at least one proof requirement.";
+    setFieldErrors(next);
+    setError(Object.keys(next).length ? "Check the highlighted fields before continuing." : null);
+    return Object.keys(next).length === 0;
+  }
+
+  async function publish(event: FormEvent) {
+    event.preventDefault();
+    if (!validateCurrentStep()) return;
+    setBusy(true); setError(null);
+    try {
+      const agreement = await api<Agreement>("/api/v1/agreements", { method: "POST", body: JSON.stringify(body) });
+      await onCreated(agreement);
+    } catch (cause) {
+      const apiError = cause as Error & { fields?: Record<string, string[]> };
+      const mapped = Object.fromEntries(Object.entries(apiError.fields ?? {}).map(([key, messages]) => [key.replace(/^policy\./, ""), messages[0] ?? "Check this value."]));
+      setFieldErrors(mapped);
+      setError(apiError.message || "Agreement could not be published.");
+    } finally { setBusy(false); }
+  }
+
+  return <Modal title="Create your agreement" eyebrow={`New agreement · step ${step} of 4`} onClose={onClose}>
+    <div className="wizard-progress" aria-label="Agreement creation progress">
+      {([1, 2, 3, 4] as const).map((item) => <button key={item} type="button" id={`agreement-step-${item}`} className={`wizard-tab wizard-tab-${item} ${step === item ? "active" : step > item ? "complete" : "upcoming"}`} aria-current={step === item ? "step" : undefined} onClick={() => item < step && setStepAndFocus(item)} disabled={item > step}><b>0{item}</b><strong>{["Details", "Participants", "Proof", "Review"][item - 1]}</strong><small>{step === item ? `Step ${item} of 4` : step > item ? "Complete" : "Next"}</small></button>)}
+    </div>
+    <form className={`modal-form agreement-wizard-form wizard-step-${step}`} onSubmit={(event) => void (step === 4 ? publish(event) : undefined)} noValidate>
+      {step === 1 && <>
+        <div className="wizard-intro"><b>Start by telling us what this agreement is about.</b><p>Use plain language. You can review everything before anything is published.</p></div>
+        <Field id="agreement-title" label="Agreement name" value={draft.title} placeholder="e.g. Website launch — milestone 01" helper="Give this agreement a name that both sides will recognize." error={fieldErrors.title} onChange={(value) => update("title", value)} autoFocus required />
+        <Field id="agreement-description" label="Description" value={draft.description} placeholder="What needs to be completed before payment can be released?" helper="Describe the work, service, or commitment covered by this agreement." error={fieldErrors.description} textarea onChange={(value) => update("description", value)} required />
+        <div className="wizard-explanation"><span className="wizard-explanation-icon">i</span><p>You will choose who is involved, how much is being paid, and what must be proven before payment can be released.</p></div>
         {error && <div className="form-error" role="alert">{error}</div>}
-        <div className="modal-actions"><button type="button" className="button secondary" onClick={onClose}>Cancel</button><button type="button" className="button primary" onClick={() => { setError(null); setStep(4); }}>Continue to review</button></div>
-      </> : <>
-        <div className="wizard-intro"><b>Confirm the terms before they are locked.</b><p>Publishing creates the agreement and hashes the policy used by the release gate. You can cancel now, but you cannot silently change these terms afterward.</p></div>
-        <div className="terms-preview"><div className="terms-preview-heading"><span>Immutable terms preview</span><span className="intent-lock">Policy hash on publish</span></div><div className="terms-preview-grid"><InfoRow label="Title" value={body.title || "Untitled agreement"} /><InfoRow label="Amount" value={`${formatUnits(body.amountBaseUnits)} XLAY`} /><InfoRow label="Deadline" value={formatDate(body.deadline)} /><InfoRow label="Payer" value={shortAddress(body.payer)} mono /><InfoRow label="Recipient" value={shortAddress(body.recipient)} mono /><InfoRow label="Token" value={shortAddress(body.tokenAddress)} mono /><InfoRow label="Evidence" value={draft.evidenceTypes.map((type) => type.replaceAll("_", " ")).join(", ")} /><InfoRow label="Confidence" value={`${(draft.minimumConfidenceBps / 100).toFixed(0)}% minimum`} /><InfoRow label="Policy" value={draft.policyVersion} /></div><div className="terms-description"><span>Description</span><p>{body.description || "No additional description provided."}</p></div></div>
-        <div className="publish-warning"><span>!</span><p><b>Publishing locks the release gate.</b> This agreement starts in <strong>Awaiting funding</strong>; ProofFlow will not move funds or sign a transaction.</p></div>
+        <div className="modal-actions"><button type="button" className="button secondary" onClick={onClose}>Cancel</button><button type="button" className="button primary" onClick={() => validateCurrentStep() && setStepAndFocus(2)}>Continue</button></div>
+      </>}
+      {step === 2 && <>
+        <div className="wizard-intro"><b>Tell us who is involved and what is being paid.</b><p>The payer provides the funds. The recipient receives them when the agreement is successfully completed.</p></div>
+        <div className="wizard-section-heading"><span>Participants</span><small>Wallet addresses are checked before you continue.</small></div>
+        <div className="form-grid participants-grid"><Field id="agreement-payer" label="Payer" value={draft.payer} placeholder="0x…" helper={walletAddress ? "Your connected wallet is ready to use as the payer." : "The wallet providing the funds."} error={fieldErrors.payer} onChange={(value) => update("payer", value)} required /><Field id="agreement-recipient" label="Recipient" value={draft.recipient} placeholder="0x…" helper="The wallet that receives the funds when the agreement is completed." error={fieldErrors.recipient} onChange={(value) => update("recipient", value)} required /></div>
+        <div className="wizard-section-heading payment-heading"><span>Payment</span><small>Amounts are shown in XLAY. ProofFlow handles the blockchain units for you.</small></div>
+        <div className="form-grid payment-grid"><Field id="agreement-amount" label="Amount" value={draft.amountBaseUnits} placeholder="e.g. 10" helper="The full amount held for this agreement." error={fieldErrors.amountBaseUnits} type="number" min="0" step="any" onChange={(value) => update("amountBaseUnits", value)} required /><div className="asset-readonly"><span>Token</span><strong>XLAY</strong><small>Native X Layer token</small></div></div>
+        <Field id="agreement-deadline" label="Deadline" value={draft.deadline} helper="Choose when the agreement should be completed." error={fieldErrors.deadline} type="datetime-local" onChange={(value) => update("deadline", value)} required />
         {error && <div className="form-error" role="alert">{error}</div>}
-        <div className="modal-actions"><button type="button" className="button secondary" onClick={() => { setError(null); setStep(3); }}>Back to policy</button><button type="submit" className="button primary" disabled={busy}>{busy ? "Publishing…" : "Publish agreement terms"}</button></div>
+        <div className="modal-actions"><button type="button" className="button secondary" onClick={() => setStepAndFocus(1)}>Back</button><button type="button" className="button primary" onClick={() => validateCurrentStep() && setStepAndFocus(3)}>Continue</button></div>
+      </>}
+      {step === 3 && <>
+        <div className="wizard-intro"><b>Choose what needs to be proven.</b><p>Payment cannot be released until the required evidence has been reviewed.</p></div>
+        <fieldset className="evidence-options" aria-describedby="evidence-help"><legend>Proof requirements</legend><p id="evidence-help" className="form-note">Select every item that must be available before payment can be released.</p><div className="evidence-option-grid">{evidenceOptions.map(({ type, label, description }) => <label className={`evidence-option evidence-option-${type} ${draft.evidenceTypes.includes(type) ? "selected" : ""}`} key={type}><input type="checkbox" checked={draft.evidenceTypes.includes(type)} onChange={() => toggleEvidence(type)} /><span><b>{label}</b><small>{description}</small><em>{draft.evidenceTypes.includes(type) ? "Selected" : "Choose"}</em></span></label>)}</div>{fieldErrors.evidenceTypes && <div className="field-error" role="alert">{fieldErrors.evidenceTypes}</div>}<div className="evidence-count" aria-live="polite">{draft.evidenceTypes.length} {draft.evidenceTypes.length === 1 ? "requirement" : "requirements"} selected</div></fieldset>
+        <details className="advanced-settings"><summary>Advanced verification settings <span>Optional</span></summary><div className="advanced-settings-body"><p>These settings control how ProofFlow evaluates evidence before allowing settlement.</p><Field id="agreement-policy-version" label="Policy version" value={draft.policyVersion} placeholder="proof-v1" helper="Keep the default unless you have a versioned policy." onChange={(value) => update("policyVersion", value)} required /><Field id="agreement-confidence" label="Minimum confidence" value={String(draft.minimumConfidenceBps / 100)} type="number" min="0" max="100" step="1" helper="Evidence reviews must meet this confidence level." onChange={(value) => update("minimumConfidenceBps", Math.round(Number(value) * 100))} required /></div></details>
+        {error && <div className="form-error" role="alert">{error}</div>}
+        <div className="modal-actions"><button type="button" className="button secondary" onClick={() => setStepAndFocus(2)}>Back</button><button type="button" className="button primary" onClick={() => validateCurrentStep() && setStepAndFocus(4)}>Review agreement</button></div>
+      </>}
+      {step === 4 && <>
+        <div className="wizard-intro"><b>Everything below will be locked when you publish.</b><p>Review the details carefully. You can edit any section without starting over.</p></div>
+        <ReviewSection title="Agreement" onEdit={() => setStepAndFocus(1)}><InfoRow label="Name" value={body.title} /><InfoRow label="Description" value={body.description} /><InfoRow label="Deadline" value={formatDate(body.deadline)} /></ReviewSection>
+        <ReviewSection title="Payment" onEdit={() => setStepAndFocus(2)}><InfoRow label="Amount" value={`${draft.amountBaseUnits} XLAY`} /><InfoRow label="Token" value="XLAY · native X Layer token" /></ReviewSection>
+        <ReviewSection title="Participants" onEdit={() => setStepAndFocus(2)}><InfoRow label="Payer" value={shortAddress(body.payer)} mono /><InfoRow label="Recipient" value={shortAddress(body.recipient)} mono /></ReviewSection>
+        <ReviewSection title="Proof requirements" onEdit={() => setStepAndFocus(3)}><InfoRow label="Selected evidence" value={draft.evidenceTypes.map((type) => evidenceOptions.find((item) => item.type === type)?.label ?? type).join(", ")} /><p className="review-helper">Payment cannot be released until the required evidence has been reviewed.</p></ReviewSection>
+        <ReviewSection title="Verification" onEdit={() => setStepAndFocus(3)}><InfoRow label="Policy" value={draft.policyVersion} /><InfoRow label="Confidence requirement" value={`${(draft.minimumConfidenceBps / 100).toFixed(0)}% minimum`} /></ReviewSection>
+        <div className="publish-warning"><span>!</span><p><b>Publishing locks these agreement terms.</b> ProofFlow evaluates the required evidence, but it does not independently control your wallet. Your explicit wallet approval is always required before funds move.</p></div>
+        {error && <div className="form-error" role="alert">{error}</div>}
+        <div className="modal-actions"><button type="button" className="button secondary" onClick={() => setStepAndFocus(3)}>Back</button><button type="submit" className="button primary" disabled={busy}>{busy ? "Publishing…" : "Publish agreement"}</button></div>
       </>}
     </form>
   </Modal>;
 }
+
+function ReviewSection({ title, onEdit, children }: { title: string; onEdit: () => void; children: ReactNode }) { return <section className="review-section"><div className="review-section-heading"><h3>{title}</h3><button type="button" className="text-button" onClick={onEdit}>Edit</button></div><div className="review-section-body">{children}</div></section>; }
 
 function EvidenceModal({ agreement, onClose, onSubmitted }: { agreement: Agreement; onClose: () => void; onSubmitted: () => Promise<void> }) {
   const [file, setFile] = useState<File | null>(null); const [type, setType] = useState<EvidenceType>(agreement.policy.requiredEvidence[0] ?? "status_update"); const [busy, setBusy] = useState(false); const [error, setError] = useState<string | null>(null);
