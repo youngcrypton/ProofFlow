@@ -20,7 +20,7 @@ type TransactionPreview = { to: string; value: string; data: string; method: str
 type SettlementIntent = { id: string; agreementId: string; amountBaseUnits: string; recipient: string; state: "CREATED" | "AWAITING_AUTHORIZATION" | "SUBMITTED" | "CONFIRMED" | "FAILED" | "UNKNOWN"; transactionHash?: string; createdAt: string; updatedAt: string };
 type SettlementAuthorization = { walletAddress: string; transactionHash: string; chainId: number };
 type SettlementReconciliation = { status: "PENDING" | "CONFIRMED" | "FAILED"; intent: SettlementIntent; receipt: { transactionHash: string; blockNumber: string; status: "0x1" | "0x0" } | null };
-type Eip1193Provider = { request: (args: { method: string; params?: unknown[] }) => Promise<unknown>; on?: (event: string, handler: (...args: unknown[]) => void) => void; removeListener?: (event: string, handler: (...args: unknown[]) => void) => void; isOkxWallet?: boolean };
+type Eip1193Provider = { request: (args: { method: string; params?: unknown[] }) => Promise<unknown>; on?: (event: string, handler: (...args: unknown[]) => void) => void; removeListener?: (event: string, handler: (...args: unknown[]) => void) => void; isOkxWallet?: boolean; providers?: Eip1193Provider[] };
 type ChainPreview = { agreementId: string; network: { chainId: number; rpcUrl: string }; vault: VaultSnapshot; transactions: { fund: TransactionPreview; commitEvidence: TransactionPreview | null; release: TransactionPreview } };
 type AgreementDetail = { agreement: Agreement; manifest: EvidenceManifest | null; reviewRun: ReviewRun | null; decision: PolicyDecision | null; audit: AuditEvent[]; chain: ChainPreview | null; chainError: string | null };
 type AgreementDraft = { title: string; description: string; payer: string; recipient: string; tokenAddress: string; amountBaseUnits: string; deadline: string; evidenceTypes: EvidenceType[]; minimumConfidenceBps: number; releaseAmountBaseUnits: string; policyVersion: string };
@@ -34,9 +34,9 @@ const XLAYER_TESTNET_CONFIG = { chainId: XLAYER_TESTNET_CHAIN_HEX, chainName: "X
 
 function getOkxProvider(): Eip1193Provider | null {
   const globals = window as Window & { okxwallet?: Eip1193Provider; ethereum?: Eip1193Provider };
-  if (globals.okxwallet) return { ...globals.okxwallet, isOkxWallet: true };
-  if (globals.ethereum?.isOkxWallet) return globals.ethereum;
-  return null;
+  if (globals.okxwallet) return globals.okxwallet;
+  const providers = globals.ethereum?.providers ?? [];
+  return providers.find((provider) => provider.isOkxWallet) ?? (globals.ethereum?.isOkxWallet ? globals.ethereum : null);
 }
 
 async function switchToXLayer(provider: Eip1193Provider): Promise<void> {
@@ -90,6 +90,10 @@ function getViewFromHash(): View {
   return "overview";
 }
 
+function isUserRejected(error: unknown): boolean {
+  return typeof error === "object" && error !== null && "code" in error && (error as { code?: number }).code === 4001;
+}
+
 function App() {
   const [agreements, setAgreements] = useState<Agreement[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -103,6 +107,7 @@ function App() {
   const [walletProvider, setWalletProvider] = useState<Eip1193Provider | null>(null);
   const [walletBusy, setWalletBusy] = useState(false);
   const [walletError, setWalletError] = useState<string | null>(null);
+  const [walletStatus, setWalletStatus] = useState<"idle" | "connecting" | "connected" | "wrong_network" | "unavailable" | "error">("idle");
   const [settlementStage, setSettlementStage] = useState<SettlementStage>("idle");
   const [settlementHash, setSettlementHash] = useState<string | null>(null);
   const [notice, setNotice] = useState<{ kind: "info" | "success" | "danger"; text: string } | null>(null);
@@ -156,8 +161,8 @@ function App() {
   useEffect(() => {
     const provider = getOkxProvider();
     if (!provider) return;
-    const onAccountsChanged = (...args: unknown[]) => { const accounts = (args[0] as string[] | undefined) ?? []; setWalletAddress(accounts[0] ?? null); if (!accounts[0]) setWalletChainId(null); };
-    const onChainChanged = (...args: unknown[]) => { const value = args[0]; setWalletChainId(typeof value === "string" ? Number.parseInt(value, 16) : null); };
+    const onAccountsChanged = (...args: unknown[]) => { const accounts = (args[0] as string[] | undefined) ?? []; const address = accounts[0] ?? null; setWalletAddress(address); setWalletStatus((current) => address ? current === "wrong_network" ? current : "connected" : "idle"); if (!address) setWalletChainId(null); };
+    const onChainChanged = (...args: unknown[]) => { const value = args[0]; const chainId = typeof value === "string" ? Number.parseInt(value, 16) : null; setWalletChainId(chainId); setWalletStatus((current) => current === "idle" ? current : chainId === XLAYER_TESTNET_CHAIN_ID ? "connected" : "wrong_network"); };
     setWalletProvider(provider);
     void provider.request({ method: "eth_accounts" }).then((value) => onAccountsChanged(value));
     void provider.request({ method: "eth_chainId" }).then((value) => onChainChanged(value));
@@ -196,25 +201,47 @@ function App() {
   async function resetDemo() { setResetting(true); try { await api("/api/v1/demo/reset", { method: "POST" }); setNotice({ kind: "success", text: "Demo workspace reset. The seeded agreement is ready to inspect." }); await loadAgreements(); } catch (error) { setNotice({ kind: "danger", text: error instanceof Error ? error.message : "Demo reset failed." }); } finally { setResetting(false); } }
 
   async function connectWallet() {
+    if (walletBusy) return;
     setWalletError(null);
     const provider = walletProvider ?? getOkxProvider();
-    if (!provider) { setWalletError("OKX Wallet was not detected. Install or unlock OKX Wallet, then try again."); return; }
+    if (!provider) {
+      setWalletStatus("unavailable");
+      setWalletError("OKX Wallet not detected. Install OKX Wallet or open this page inside the OKX Wallet app.");
+      return;
+    }
     setWalletProvider(provider);
+    setWalletBusy(true);
+    setWalletStatus("connecting");
     try {
       const accounts = await provider.request({ method: "eth_requestAccounts" }) as string[];
-      setWalletAddress(accounts[0] ?? null);
+      const address = accounts[0] ?? null;
       const chainHex = await provider.request({ method: "eth_chainId" }) as string;
-      setWalletChainId(Number.parseInt(chainHex, 16));
-      setNotice({ kind: "success", text: `OKX Wallet connected: ${shortAddress(accounts[0] ?? "")}.` });
-    } catch (error) { setWalletError(error instanceof Error ? error.message : "OKX Wallet connection was rejected."); }
+      const chainId = Number.parseInt(chainHex, 16);
+      setWalletAddress(address);
+      setWalletChainId(chainId);
+      if (!address) throw new Error("OKX Wallet did not return an account. Unlock the wallet and try again.");
+      if (chainId !== XLAYER_TESTNET_CHAIN_ID) {
+        setWalletStatus("wrong_network");
+        setWalletError(`Connected to chain ${chainId}. Switch to X Layer testnet (chain ${XLAYER_TESTNET_CHAIN_ID}) before settling.`);
+      } else {
+        setWalletStatus("connected");
+        setNotice({ kind: "success", text: `OKX Wallet connected: ${shortAddress(address)}.` });
+      }
+    } catch (error) {
+      setWalletStatus("error");
+      setWalletError(isUserRejected(error) ? "Wallet connection was cancelled." : error instanceof Error ? error.message : "Unable to connect wallet. Please try again.");
+    } finally { setWalletBusy(false); }
   }
 
   async function switchWalletNetwork() {
+    if (walletBusy) return;
     setWalletError(null);
     const provider = walletProvider ?? getOkxProvider();
-    if (!provider) { setWalletError("OKX Wallet was not detected."); return; }
-    try { await switchToXLayer(provider); setWalletChainId(XLAYER_TESTNET_CHAIN_ID); setNotice({ kind: "success", text: "OKX Wallet switched to X Layer testnet." }); }
-    catch (error) { setWalletError(error instanceof Error ? error.message : "Network switch was rejected in OKX Wallet."); }
+    if (!provider) { setWalletStatus("unavailable"); setWalletError("OKX Wallet not detected. Install OKX Wallet or open this page inside the OKX Wallet app."); return; }
+    setWalletBusy(true);
+    try { await switchToXLayer(provider); setWalletChainId(XLAYER_TESTNET_CHAIN_ID); setWalletStatus("connected"); setNotice({ kind: "success", text: "OKX Wallet switched to X Layer testnet." }); }
+    catch (error) { setWalletStatus(isUserRejected(error) ? "wrong_network" : "error"); setWalletError(isUserRejected(error) ? "Network switch was cancelled." : error instanceof Error ? error.message : "Unable to switch network. Please try again."); }
+    finally { setWalletBusy(false); }
   }
 
   async function authorizeRelease(agreementId: string) {
@@ -298,7 +325,7 @@ function App() {
   </>;
 
   if (activeView === "landing") return <>
-    <LandingPage statusLabel={statusLabel} network={network} onNavigate={navigate} onCreate={() => setCreateOpen(true)} agreements={agreements} walletAddress={walletAddress} onConnect={() => void connectWallet()} />
+    <LandingPage statusLabel={statusLabel} network={network} agreements={agreements} walletAddress={walletAddress} walletBusy={walletBusy} walletStatus={walletStatus} walletError={walletError} onNavigate={navigate} onCreate={() => setCreateOpen(true)} onConnect={() => void connectWallet()} />
     {createOpen && <CreateAgreementModal onClose={() => setCreateOpen(false)} onCreated={handleCreated} walletAddress={walletAddress} />}
   </>;
 
@@ -321,7 +348,7 @@ function App() {
   </div>;
 }
 
-function LandingPage({ statusLabel, network, agreements, walletAddress, onNavigate, onCreate, onConnect }: { statusLabel: string; network: XLayerStatus | null; agreements: Agreement[]; walletAddress: string | null; onNavigate: (view: View) => void; onCreate: () => void; onConnect: () => void }) {
+function LandingPage({ statusLabel, network, agreements, walletAddress, walletBusy, walletStatus, walletError, onNavigate, onCreate, onConnect }: { statusLabel: string; network: XLayerStatus | null; agreements: Agreement[]; walletAddress: string | null; walletBusy: boolean; walletStatus: "idle" | "connecting" | "connected" | "wrong_network" | "unavailable" | "error"; walletError: string | null; onNavigate: (view: View) => void; onCreate: () => void; onConnect: () => void }) {
   const [menuOpen, setMenuOpen] = useState(false);
   const go = (view: View) => { setMenuOpen(false); onNavigate(view); };
   return <div className="landing-page">
@@ -331,7 +358,7 @@ function LandingPage({ statusLabel, network, agreements, walletAddress, onNaviga
     <header className="landing-header">
       <button className="landing-menu-button" aria-label={menuOpen ? "Close navigation" : "Open navigation"} aria-expanded={menuOpen} onClick={() => setMenuOpen((value) => !value)}><span /><span /><span /></button>
       <button className="landing-brand" onClick={() => go("landing")} aria-label="ProofFlow home"><span className="landing-brand-mark">P</span><span>ProofFlow</span></button>
-      <div className="landing-header-actions"><div className="landing-network"><span className="landing-live-dot" /> <span>{network ? "X LAYER TESTNET · ONLINE" : "X LAYER TESTNET · CHECKING"}</span><code>1952</code></div><button className="landing-wallet-button" onClick={onConnect}><span className="landing-wallet-orb" aria-hidden="true">◈</span><span>{walletAddress ? shortAddress(walletAddress) : "Connect OKX Wallet"}</span><span className="landing-wallet-arrow" aria-hidden="true">↗</span></button></div>
+      <div className="landing-header-actions"><div className="landing-network"><span className="landing-live-dot" /> <span>{network ? "X LAYER TESTNET · ONLINE" : "X LAYER TESTNET · CHECKING"}</span><code>1952</code></div><button className={`landing-wallet-button ${walletStatus}`} disabled={walletBusy} onClick={onConnect} aria-describedby={walletError ? "landing-wallet-error" : undefined}><span className="landing-wallet-orb" aria-hidden="true">◈</span><span>{walletBusy ? "Connecting…" : walletAddress ? shortAddress(walletAddress) : walletStatus === "unavailable" ? "OKX Wallet not detected" : walletStatus === "wrong_network" ? "Wrong network" : "Connect OKX Wallet"}</span><span className="landing-wallet-arrow" aria-hidden="true">↗</span></button>{walletError && <div className="landing-wallet-feedback" id="landing-wallet-error" role="alert"><span>{walletStatus === "unavailable" ? "Wallet unavailable" : walletStatus === "wrong_network" ? "Wrong network" : "Connection issue"}</span><p>{walletError}</p>{walletStatus === "unavailable" && <a href="https://web3.okx.com/download" target="_blank" rel="noreferrer">Install OKX Wallet ↗</a>}</div>}</div>
     </header>
     <div className={`landing-menu-backdrop ${menuOpen ? "is-open" : ""}`} aria-hidden={!menuOpen} onClick={() => setMenuOpen(false)} />
     <aside className={`landing-drawer ${menuOpen ? "is-open" : ""}`} aria-label="ProofFlow navigation">
