@@ -2,6 +2,7 @@ import { StrictMode, useCallback, useEffect, useMemo, useRef, useState } from "r
 import type { FormEvent, ReactNode } from "react";
 import { createRoot } from "react-dom/client";
 import { Analytics } from "@vercel/analytics/react";
+import { OKXUniversalConnectUI } from "@okxconnect/ui";
 import AnimatedContent from "./components/motion/AnimatedContent";
 import BlurText from "./components/motion/BlurText";
 import CountUp from "./components/motion/CountUp";
@@ -21,6 +22,8 @@ type SettlementIntent = { id: string; agreementId: string; amountBaseUnits: stri
 type SettlementAuthorization = { walletAddress: string; transactionHash: string; chainId: number };
 type SettlementReconciliation = { status: "PENDING" | "CONFIRMED" | "FAILED"; intent: SettlementIntent; receipt: { transactionHash: string; blockNumber: string; status: "0x1" | "0x0" } | null };
 type Eip1193Provider = { request: (args: { method: string; params?: unknown[] }) => Promise<unknown>; on?: (event: string, handler: (...args: unknown[]) => void) => void; removeListener?: (event: string, handler: (...args: unknown[]) => void) => void; isOkxWallet?: boolean; providers?: Eip1193Provider[] };
+type WalletStatus = "idle" | "connecting" | "connected" | "wrong_network" | "rejected" | "unavailable" | "error";
+type OkxSession = { namespaces?: { eip155?: { accounts?: string[]; chains?: string[]; defaultChain?: string } } };
 type ChainPreview = { agreementId: string; network: { chainId: number; rpcUrl: string }; vault: VaultSnapshot; transactions: { fund: TransactionPreview; commitEvidence: TransactionPreview | null; release: TransactionPreview } };
 type AgreementDetail = { agreement: Agreement; manifest: EvidenceManifest | null; reviewRun: ReviewRun | null; decision: PolicyDecision | null; audit: AuditEvent[]; chain: ChainPreview | null; chainError: string | null };
 type AgreementDraft = { title: string; description: string; payer: string; recipient: string; tokenAddress: string; amountBaseUnits: string; deadline: string; evidenceTypes: EvidenceType[]; minimumConfidenceBps: number; releaseAmountBaseUnits: string; policyVersion: string };
@@ -91,7 +94,35 @@ function getViewFromHash(): View {
 }
 
 function isUserRejected(error: unknown): boolean {
-  return typeof error === "object" && error !== null && "code" in error && (error as { code?: number }).code === 4001;
+  const code = typeof error === "object" && error !== null && "code" in error ? (error as { code?: number }).code : undefined;
+  return code === 4001 || code === 300;
+}
+
+function isMobileBrowser(): boolean {
+  return /Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
+}
+
+function okxErrorCode(error: unknown): number | undefined {
+  return typeof error === "object" && error !== null && "code" in error ? (error as { code?: number }).code : undefined;
+}
+
+function sessionAddress(session: OkxSession | undefined): string | null {
+  const value = session?.namespaces?.eip155?.accounts?.[0];
+  return value?.split(":").pop() ?? null;
+}
+
+function sessionChainId(session: OkxSession | undefined): number | null {
+  const accountChain = session?.namespaces?.eip155?.accounts?.[0]?.split(":")[1];
+  const defaultChain = session?.namespaces?.eip155?.defaultChain?.split(":").pop();
+  const chain = accountChain ?? defaultChain ?? session?.namespaces?.eip155?.chains?.[0]?.split(":")[1];
+  return chain ? Number(chain) : null;
+}
+
+function sdkProvider(ui: OKXUniversalConnectUI): Eip1193Provider {
+  const provider = ui.getUniversalProvider();
+  return {
+    request: ({ method, params }) => provider.request({ method, params }, `eip155:${XLAYER_TESTNET_CHAIN_ID}`)
+  };
 }
 
 function App() {
@@ -107,7 +138,8 @@ function App() {
   const [walletProvider, setWalletProvider] = useState<Eip1193Provider | null>(null);
   const [walletBusy, setWalletBusy] = useState(false);
   const [walletError, setWalletError] = useState<string | null>(null);
-  const [walletStatus, setWalletStatus] = useState<"idle" | "connecting" | "connected" | "wrong_network" | "unavailable" | "error">("idle");
+  const [walletStatus, setWalletStatus] = useState<WalletStatus>("idle");
+  const mobileOkxUiRef = useRef<OKXUniversalConnectUI | null>(null);
   const [settlementStage, setSettlementStage] = useState<SettlementStage>("idle");
   const [settlementHash, setSettlementHash] = useState<string | null>(null);
   const [notice, setNotice] = useState<{ kind: "info" | "success" | "danger"; text: string } | null>(null);
@@ -159,6 +191,33 @@ function App() {
 
   useEffect(() => { void loadAgreements(); void loadNetwork(); }, [loadAgreements, loadNetwork]);
   useEffect(() => {
+    if (!isMobileBrowser() || getOkxProvider()) return;
+    let cancelled = false;
+    void OKXUniversalConnectUI.init({
+      dappMetaData: { name: "ProofFlow", icon: "https://static.okx.com/cdn/assets/imgs/247/58E63FEA47A2B7D7.png" },
+      actionsConfiguration: { modals: "all", returnStrategy: "back" },
+      uiPreferences: { theme: "SYSTEM" }
+    }).then((ui) => {
+      if (cancelled) return;
+      mobileOkxUiRef.current = ui;
+      const applySession = (sessionValue: unknown) => {
+        const session = sessionValue as OkxSession | undefined;
+        const address = sessionAddress(session);
+        const chainId = sessionChainId(session);
+        setWalletProvider(address ? sdkProvider(ui) : null);
+        setWalletAddress(address);
+        setWalletChainId(chainId);
+        setWalletStatus(address ? chainId === XLAYER_TESTNET_CHAIN_ID ? "connected" : "wrong_network" : "idle");
+        if (!address) setWalletError(null);
+      };
+      ui.on("session_update", applySession);
+      ui.on("accountChanged", applySession);
+      ui.on("session_delete", () => applySession(undefined));
+      applySession(ui.session);
+    }).catch(() => undefined);
+    return () => { cancelled = true; };
+  }, []);
+  useEffect(() => {
     const provider = getOkxProvider();
     if (!provider) return;
     const onAccountsChanged = (...args: unknown[]) => { const accounts = (args[0] as string[] | undefined) ?? []; const address = accounts[0] ?? null; setWalletAddress(address); setWalletStatus((current) => address ? current === "wrong_network" ? current : "connected" : "idle"); if (!address) setWalletChainId(null); };
@@ -203,33 +262,93 @@ function App() {
   async function connectWallet() {
     if (walletBusy) return;
     setWalletError(null);
-    const provider = walletProvider ?? getOkxProvider();
-    if (!provider) {
-      setWalletStatus("unavailable");
-      setWalletError("OKX Wallet not detected. Install OKX Wallet or open this page inside the OKX Wallet app.");
+    const injected = walletProvider ?? getOkxProvider();
+    if (!injected && isMobileBrowser()) {
+      const ui = mobileOkxUiRef.current;
+      if (!ui) {
+        setWalletStatus("unavailable");
+        setWalletError("OKX Wallet is still loading. Tap Connect again, or install the OKX Wallet app.");
+        return;
+      }
+      setWalletBusy(true);
+      setWalletStatus("connecting");
+      const connection = ui.openModal({
+        namespaces: {
+          eip155: {
+            chains: [`eip155:${XLAYER_TESTNET_CHAIN_ID}`],
+            defaultChain: String(XLAYER_TESTNET_CHAIN_ID),
+            rpcMap: { [String(XLAYER_TESTNET_CHAIN_ID)]: XLAYER_TESTNET_CONFIG.rpcUrls[0]! }
+          }
+        }
+      });
+      void connection.then((session) => {
+        const typedSession = session as OkxSession | undefined;
+        const address = sessionAddress(typedSession);
+        if (!address) throw new Error("OKX Wallet did not return an account.");
+        const chainId = sessionChainId(typedSession);
+        setWalletProvider(sdkProvider(ui));
+        setWalletAddress(address);
+        setWalletChainId(chainId);
+        if (chainId !== XLAYER_TESTNET_CHAIN_ID) {
+          setWalletStatus("wrong_network");
+          setWalletError("Connected to the wrong network. Switch to X Layer Testnet.");
+        } else {
+          setWalletStatus("connected");
+          setNotice({ kind: "success", text: `OKX Wallet connected: ${shortAddress(address)}.` });
+        }
+      }).catch((error: unknown) => {
+        const code = okxErrorCode(error);
+        if (isUserRejected(error)) {
+          setWalletStatus("rejected");
+          setWalletError("Wallet connection cancelled.");
+        } else if (code === 600) {
+          setWalletStatus("unavailable");
+          setWalletError("OKX Wallet is not installed.");
+        } else if (code === 700) {
+          setWalletStatus("error");
+          setWalletError("Unable to open OKX Wallet. Tap Connect again to retry.");
+        } else {
+          setWalletStatus("error");
+          setWalletError("Unable to connect to OKX Wallet. Please try again.");
+        }
+      }).finally(() => setWalletBusy(false));
       return;
     }
-    setWalletProvider(provider);
+    if (!injected) {
+      setWalletStatus("unavailable");
+      setWalletError("No compatible wallet was detected.");
+      return;
+    }
+    setWalletProvider(injected);
     setWalletBusy(true);
     setWalletStatus("connecting");
     try {
-      const accounts = await provider.request({ method: "eth_requestAccounts" }) as string[];
+      const accounts = await injected.request({ method: "eth_requestAccounts" }) as string[];
       const address = accounts[0] ?? null;
-      const chainHex = await provider.request({ method: "eth_chainId" }) as string;
+      const chainHex = await injected.request({ method: "eth_chainId" }) as string;
       const chainId = Number.parseInt(chainHex, 16);
       setWalletAddress(address);
       setWalletChainId(chainId);
       if (!address) throw new Error("OKX Wallet did not return an account. Unlock the wallet and try again.");
       if (chainId !== XLAYER_TESTNET_CHAIN_ID) {
         setWalletStatus("wrong_network");
-        setWalletError(`Connected to chain ${chainId}. Switch to X Layer testnet (chain ${XLAYER_TESTNET_CHAIN_ID}) before settling.`);
+        setWalletError("Connected to the wrong network. Switch to X Layer Testnet.");
       } else {
         setWalletStatus("connected");
         setNotice({ kind: "success", text: `OKX Wallet connected: ${shortAddress(address)}.` });
       }
     } catch (error) {
-      setWalletStatus("error");
-      setWalletError(isUserRejected(error) ? "Wallet connection was cancelled." : error instanceof Error ? error.message : "Unable to connect wallet. Please try again.");
+      const code = okxErrorCode(error);
+      if (isUserRejected(error)) {
+        setWalletStatus("rejected");
+        setWalletError("Wallet connection cancelled.");
+      } else if (code === 4902) {
+        setWalletStatus("wrong_network");
+        setWalletError("Wrong network. Switch to X Layer Testnet.");
+      } else {
+        setWalletStatus("error");
+        setWalletError("Unable to connect to OKX Wallet. Please try again.");
+      }
     } finally { setWalletBusy(false); }
   }
 
@@ -348,7 +467,7 @@ function App() {
   </div>;
 }
 
-function LandingPage({ statusLabel, network, agreements, walletAddress, walletBusy, walletStatus, walletError, onNavigate, onCreate, onConnect }: { statusLabel: string; network: XLayerStatus | null; agreements: Agreement[]; walletAddress: string | null; walletBusy: boolean; walletStatus: "idle" | "connecting" | "connected" | "wrong_network" | "unavailable" | "error"; walletError: string | null; onNavigate: (view: View) => void; onCreate: () => void; onConnect: () => void }) {
+function LandingPage({ statusLabel, network, agreements, walletAddress, walletBusy, walletStatus, walletError, onNavigate, onCreate, onConnect }: { statusLabel: string; network: XLayerStatus | null; agreements: Agreement[]; walletAddress: string | null; walletBusy: boolean; walletStatus: WalletStatus; walletError: string | null; onNavigate: (view: View) => void; onCreate: () => void; onConnect: () => void }) {
   const [menuOpen, setMenuOpen] = useState(false);
   const go = (view: View) => { setMenuOpen(false); onNavigate(view); };
   return <div className="landing-page">

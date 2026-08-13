@@ -8,6 +8,7 @@
     "build": "vite build"
   },
   "dependencies": {
+    "@okxconnect/ui": "^1.9.1",
     "@proofflow/domain": "*",
     "@vercel/analytics": "^2.0.1",
     "gsap": "^3.15.0",
