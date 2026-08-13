@@ -159,10 +159,6 @@ export function createApp(repository: ProofFlowRepository = new MemoryRepository
     const hasBearer = Boolean(apiToken && c.req.header("authorization") === `Bearer ${apiToken}`);
     if (requireAuth && isMutating(c.req.raw) && !isSessionRoute && !hasBearer && !sessionWallet) {
       return c.json({ error: { code: "UNAUTHORIZED", message: "A valid API bearer token or signed wallet session is required." } }, 401);
-    if (requireAuth && isMutating(c.req.raw) && c.req.path !== "/api/v1/wallet/challenge" && c.req.path !== "/api/v1/wallet/session") {
-      if (!apiToken || c.req.header("authorization") !== `Bearer ${apiToken}`) {
-        return c.json({ error: { code: "UNAUTHORIZED", message: "A valid API bearer token is required." } }, 401);
-      }
     }
     await next();
   });
@@ -232,13 +228,6 @@ export function createApp(repository: ProofFlowRepository = new MemoryRepository
     if (enforceWalletAccess && !c.get("walletAddress")) return c.json({ error: { code: "WALLET_AUTH_REQUIRED", message: "Connect and sign the wallet access message before listing agreements." } }, 401);
     if (enforceWalletAccess && address && normalizeEvmAddress(address) !== c.get("walletAddress")) return c.json({ error: { code: "FORBIDDEN", message: "The requested wallet does not match the signed wallet session." } }, 403);
     const effectiveAddress = address ?? c.get("walletAddress");
-    const agreements = repository.listAgreements().filter((agreement) => {
-      if (!effectiveAddress) return true;
-      const normalizedAddress = normalizeEvmAddress(effectiveAddress);
-      if (role === "client") return normalizeEvmAddress(agreement.payer) === normalizedAddress;
-      if (role === "contractor") return normalizeEvmAddress(agreement.recipient) === normalizedAddress;
-      return normalizeEvmAddress(agreement.payer) === normalizedAddress || normalizeEvmAddress(agreement.recipient) === normalizedAddress;
-    });
     const agreements = repository.listAgreements().filter((agreement) => {
       if (!effectiveAddress) return true;
       const normalizedAddress = normalizeEvmAddress(effectiveAddress);
