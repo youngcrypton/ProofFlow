@@ -2,7 +2,10 @@ import { StrictMode, useCallback, useEffect, useMemo, useRef, useState } from "r
 import type { FormEvent, ReactNode } from "react";
 import { createRoot } from "react-dom/client";
 import { Analytics } from "@vercel/analytics/react";
-import { OKXUniversalConnectUI } from "@okxconnect/ui";
+import { AppKitProvider, useAppKitAccount, useAppKitProvider } from "@reown/appkit/react";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { WagmiProvider } from "wagmi";
+import { walletAppKit, walletConfigurationMissing, asEip1193Provider, switchToXLayer, XLAYER_TESTNET_CHAIN_ID, wagmiConfig } from "./wallet";
 import AnimatedContent from "./components/motion/AnimatedContent";
 import BlurText from "./components/motion/BlurText";
 import CountUp from "./components/motion/CountUp";
@@ -23,7 +26,6 @@ type SettlementAuthorization = { walletAddress: string; transactionHash: string;
 type SettlementReconciliation = { status: "PENDING" | "CONFIRMED" | "FAILED"; intent: SettlementIntent; receipt: { transactionHash: string; blockNumber: string; status: "0x1" | "0x0" } | null };
 type Eip1193Provider = { request: (args: { method: string; params?: unknown[] }) => Promise<unknown>; on?: (event: string, handler: (...args: unknown[]) => void) => void; removeListener?: (event: string, handler: (...args: unknown[]) => void) => void; isOkxWallet?: boolean; providers?: Eip1193Provider[] };
 type WalletStatus = "idle" | "connecting" | "connected" | "wrong_network" | "rejected" | "unavailable" | "error";
-type OkxSession = { namespaces?: { eip155?: { accounts?: string[]; chains?: string[]; defaultChain?: string } } };
 type ChainPreview = { agreementId: string; network: { chainId: number; rpcUrl: string }; vault: VaultSnapshot; transactions: { fund: TransactionPreview; commitEvidence: TransactionPreview | null; release: TransactionPreview } };
 type AgreementDetail = { agreement: Agreement; manifest: EvidenceManifest | null; reviewRun: ReviewRun | null; decision: PolicyDecision | null; audit: AuditEvent[]; chain: ChainPreview | null; chainError: string | null };
 type AgreementDraft = { title: string; description: string; payer: string; recipient: string; tokenAddress: string; amountBaseUnits: string; deadline: string; evidenceTypes: EvidenceType[]; minimumConfidenceBps: number; releaseAmountBaseUnits: string; policyVersion: string };
@@ -31,26 +33,6 @@ type SettlementStage = "idle" | "preparing" | "ready" | "awaiting_wallet" | "sub
 type View = "landing" | "overview" | "agreements" | "review" | "activity" | "wallet" | "settings";
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL ?? "/api-proxy";
-const XLAYER_TESTNET_CHAIN_ID = 1952;
-const XLAYER_TESTNET_CHAIN_HEX = "0x7a0";
-const XLAYER_TESTNET_CONFIG = { chainId: XLAYER_TESTNET_CHAIN_HEX, chainName: "X Layer testnet", nativeCurrency: { name: "OKB", symbol: "OKB", decimals: 18 }, rpcUrls: ["https://testrpc.xlayer.tech/terigon", "https://xlayertestrpc.okx.com/terigon"], blockExplorerUrls: ["https://www.okx.com/web3/explorer/xlayer-test"] };
-
-function getOkxProvider(): Eip1193Provider | null {
-  const globals = window as Window & { okxwallet?: Eip1193Provider; ethereum?: Eip1193Provider };
-  if (globals.okxwallet) return globals.okxwallet;
-  const providers = globals.ethereum?.providers ?? [];
-  return providers.find((provider) => provider.isOkxWallet) ?? (globals.ethereum?.isOkxWallet ? globals.ethereum : null);
-}
-
-async function switchToXLayer(provider: Eip1193Provider): Promise<void> {
-  try {
-    await provider.request({ method: "wallet_switchEthereumChain", params: [{ chainId: XLAYER_TESTNET_CHAIN_HEX }] });
-  } catch (error) {
-    const code = typeof error === "object" && error !== null && "code" in error ? (error as { code?: number }).code : undefined;
-    if (code !== 4902) throw error;
-    await provider.request({ method: "wallet_addEthereumChain", params: [XLAYER_TESTNET_CONFIG] });
-  }
-}
 
 async function pollSettlement(intentId: string, transactionHash: string): Promise<SettlementReconciliation | null> {
   const deadline = Date.now() + 90_000;
@@ -98,33 +80,6 @@ function isUserRejected(error: unknown): boolean {
   return code === 4001 || code === 300;
 }
 
-function isMobileBrowser(): boolean {
-  return /Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
-}
-
-function okxErrorCode(error: unknown): number | undefined {
-  return typeof error === "object" && error !== null && "code" in error ? (error as { code?: number }).code : undefined;
-}
-
-function sessionAddress(session: OkxSession | undefined): string | null {
-  const value = session?.namespaces?.eip155?.accounts?.[0];
-  return value?.split(":").pop() ?? null;
-}
-
-function sessionChainId(session: OkxSession | undefined): number | null {
-  const accountChain = session?.namespaces?.eip155?.accounts?.[0]?.split(":")[1];
-  const defaultChain = session?.namespaces?.eip155?.defaultChain?.split(":").pop();
-  const chain = accountChain ?? defaultChain ?? session?.namespaces?.eip155?.chains?.[0]?.split(":")[1];
-  return chain ? Number(chain) : null;
-}
-
-function sdkProvider(ui: OKXUniversalConnectUI): Eip1193Provider {
-  const provider = ui.getUniversalProvider();
-  return {
-    request: ({ method, params }) => provider.request({ method, params }, `eip155:${XLAYER_TESTNET_CHAIN_ID}`)
-  };
-}
-
 function App() {
   const [agreements, setAgreements] = useState<Agreement[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -135,11 +90,11 @@ function App() {
   const [detailLoading, setDetailLoading] = useState(false);
   const [walletAddress, setWalletAddress] = useState<string | null>(null);
   const [walletChainId, setWalletChainId] = useState<number | null>(null);
-  const [walletProvider, setWalletProvider] = useState<Eip1193Provider | null>(null);
+  const { walletProvider: appKitProvider } = useAppKitProvider<Eip1193Provider>("eip155");
+  const { address: appKitAddress, isConnected: appKitConnected } = useAppKitAccount({ namespace: "eip155" });
   const [walletBusy, setWalletBusy] = useState(false);
   const [walletError, setWalletError] = useState<string | null>(null);
   const [walletStatus, setWalletStatus] = useState<WalletStatus>("idle");
-  const mobileOkxUiRef = useRef<OKXUniversalConnectUI | null>(null);
   const [settlementStage, setSettlementStage] = useState<SettlementStage>("idle");
   const [settlementHash, setSettlementHash] = useState<string | null>(null);
   const [notice, setNotice] = useState<{ kind: "info" | "success" | "danger"; text: string } | null>(null);
@@ -191,44 +146,29 @@ function App() {
 
   useEffect(() => { void loadAgreements(); void loadNetwork(); }, [loadAgreements, loadNetwork]);
   useEffect(() => {
-    if (!isMobileBrowser() || getOkxProvider()) return;
-    let cancelled = false;
-    void OKXUniversalConnectUI.init({
-      dappMetaData: { name: "ProofFlow", icon: "https://static.okx.com/cdn/assets/imgs/247/58E63FEA47A2B7D7.png" },
-      actionsConfiguration: { modals: "all", returnStrategy: "back" },
-      uiPreferences: { theme: "SYSTEM" }
-    }).then((ui) => {
-      if (cancelled) return;
-      mobileOkxUiRef.current = ui;
-      const applySession = (sessionValue: unknown) => {
-        const session = sessionValue as OkxSession | undefined;
-        const address = sessionAddress(session);
-        const chainId = sessionChainId(session);
-        setWalletProvider(address ? sdkProvider(ui) : null);
-        setWalletAddress(address);
-        setWalletChainId(chainId);
-        setWalletStatus(address ? chainId === XLAYER_TESTNET_CHAIN_ID ? "connected" : "wrong_network" : "idle");
-        if (!address) setWalletError(null);
-      };
-      ui.on("session_update", applySession);
-      ui.on("accountChanged", applySession);
-      ui.on("session_delete", () => applySession(undefined));
-      applySession(ui.session);
-    }).catch(() => undefined);
-    return () => { cancelled = true; };
-  }, []);
-  useEffect(() => {
-    const provider = getOkxProvider();
-    if (!provider) return;
-    const onAccountsChanged = (...args: unknown[]) => { const accounts = (args[0] as string[] | undefined) ?? []; const address = accounts[0] ?? null; setWalletAddress(address); setWalletStatus((current) => address ? current === "wrong_network" ? current : "connected" : "idle"); if (!address) setWalletChainId(null); };
-    const onChainChanged = (...args: unknown[]) => { const value = args[0]; const chainId = typeof value === "string" ? Number.parseInt(value, 16) : null; setWalletChainId(chainId); setWalletStatus((current) => current === "idle" ? current : chainId === XLAYER_TESTNET_CHAIN_ID ? "connected" : "wrong_network"); };
-    setWalletProvider(provider);
-    void provider.request({ method: "eth_accounts" }).then((value) => onAccountsChanged(value));
-    void provider.request({ method: "eth_chainId" }).then((value) => onChainChanged(value));
-    provider.on?.("accountsChanged", onAccountsChanged);
-    provider.on?.("chainChanged", onChainChanged);
-    return () => { provider.removeListener?.("accountsChanged", onAccountsChanged); provider.removeListener?.("chainChanged", onChainChanged); };
-  }, []);
+    const address = appKitConnected ? appKitAddress ?? null : null;
+    setWalletAddress(address);
+    if (!address) {
+      setWalletChainId(null);
+      setWalletStatus("idle");
+      return;
+    }
+    const provider = asEip1193Provider(appKitProvider);
+    if (!provider) {
+      setWalletStatus("unavailable");
+      setWalletError("The connected wallet provider is unavailable. Please reconnect.");
+      return;
+    }
+    void provider.request({ method: "eth_chainId" }).then((value) => {
+      const chainId = typeof value === "string" ? Number.parseInt(value, 16) : Number(value);
+      setWalletChainId(chainId);
+      setWalletStatus(chainId === XLAYER_TESTNET_CHAIN_ID ? "connected" : "wrong_network");
+      setWalletError(null);
+    }).catch(() => {
+      setWalletStatus("error");
+      setWalletError("Unable to read the connected wallet network.");
+    });
+  }, [appKitAddress, appKitConnected, appKitProvider]);
   useEffect(() => { if (selectedId) void loadDetail(selectedId); }, [selectedId, loadDetail]);
   useEffect(() => {
     const onHashChange = () => setActiveView(getViewFromHash());
@@ -262,110 +202,44 @@ function App() {
   async function connectWallet() {
     if (walletBusy) return;
     setWalletError(null);
-    const injected = walletProvider ?? getOkxProvider();
-    if (!injected && isMobileBrowser()) {
-      const ui = mobileOkxUiRef.current;
-      if (!ui) {
-        setWalletStatus("unavailable");
-        setWalletError("OKX Wallet is still loading. Tap Connect again, or install the OKX Wallet app.");
-        return;
-      }
-      setWalletBusy(true);
-      setWalletStatus("connecting");
-      const connection = ui.openModal({
-        namespaces: {
-          eip155: {
-            chains: [`eip155:${XLAYER_TESTNET_CHAIN_ID}`],
-            defaultChain: String(XLAYER_TESTNET_CHAIN_ID),
-            rpcMap: { [String(XLAYER_TESTNET_CHAIN_ID)]: XLAYER_TESTNET_CONFIG.rpcUrls[0]! }
-          }
-        }
-      });
-      void connection.then((session) => {
-        const typedSession = session as OkxSession | undefined;
-        const address = sessionAddress(typedSession);
-        if (!address) throw new Error("OKX Wallet did not return an account.");
-        const chainId = sessionChainId(typedSession);
-        setWalletProvider(sdkProvider(ui));
-        setWalletAddress(address);
-        setWalletChainId(chainId);
-        if (chainId !== XLAYER_TESTNET_CHAIN_ID) {
-          setWalletStatus("wrong_network");
-          setWalletError("Connected to the wrong network. Switch to X Layer Testnet.");
-        } else {
-          setWalletStatus("connected");
-          setNotice({ kind: "success", text: `OKX Wallet connected: ${shortAddress(address)}.` });
-        }
-      }).catch((error: unknown) => {
-        const code = okxErrorCode(error);
-        if (isUserRejected(error)) {
-          setWalletStatus("rejected");
-          setWalletError("Wallet connection cancelled.");
-        } else if (code === 600) {
-          setWalletStatus("unavailable");
-          setWalletError("OKX Wallet is not installed.");
-        } else if (code === 700) {
-          setWalletStatus("error");
-          setWalletError("Unable to open OKX Wallet. Tap Connect again to retry.");
-        } else {
-          setWalletStatus("error");
-          setWalletError("Unable to connect to OKX Wallet. Please try again.");
-        }
-      }).finally(() => setWalletBusy(false));
-      return;
-    }
-    if (!injected) {
+    if (walletConfigurationMissing) {
       setWalletStatus("unavailable");
-      setWalletError("No compatible wallet was detected.");
+      setWalletError("Wallet connections are not configured for this deployment.");
       return;
     }
-    setWalletProvider(injected);
     setWalletBusy(true);
     setWalletStatus("connecting");
     try {
-      const accounts = await injected.request({ method: "eth_requestAccounts" }) as string[];
-      const address = accounts[0] ?? null;
-      const chainHex = await injected.request({ method: "eth_chainId" }) as string;
-      const chainId = Number.parseInt(chainHex, 16);
-      setWalletAddress(address);
-      setWalletChainId(chainId);
-      if (!address) throw new Error("OKX Wallet did not return an account. Unlock the wallet and try again.");
-      if (chainId !== XLAYER_TESTNET_CHAIN_ID) {
-        setWalletStatus("wrong_network");
-        setWalletError("Connected to the wrong network. Switch to X Layer Testnet.");
-      } else {
-        setWalletStatus("connected");
-        setNotice({ kind: "success", text: `OKX Wallet connected: ${shortAddress(address)}.` });
-      }
+      await walletAppKit.open({ view: "Connect", namespace: "eip155" });
+      setNotice({ kind: "info", text: "Choose a wallet to connect to ProofFlow." });
     } catch (error) {
-      const code = okxErrorCode(error);
       if (isUserRejected(error)) {
         setWalletStatus("rejected");
-        setWalletError("Wallet connection cancelled.");
-      } else if (code === 4902) {
-        setWalletStatus("wrong_network");
-        setWalletError("Wrong network. Switch to X Layer Testnet.");
+        setWalletError("Connection cancelled.");
       } else {
+        console.error("ProofFlow wallet connection failed", error);
         setWalletStatus("error");
-        setWalletError("Unable to connect to OKX Wallet. Please try again.");
+        setWalletError("Unable to connect. Please try again.");
       }
-    } finally { setWalletBusy(false); }
+    } finally {
+      setWalletBusy(false);
+    }
   }
 
   async function switchWalletNetwork() {
     if (walletBusy) return;
     setWalletError(null);
-    const provider = walletProvider ?? getOkxProvider();
-    if (!provider) { setWalletStatus("unavailable"); setWalletError("OKX Wallet not detected. Install OKX Wallet or open this page inside the OKX Wallet app."); return; }
+    const provider = asEip1193Provider(appKitProvider);
+    if (!provider) { setWalletStatus("unavailable"); setWalletError("Wallet provider unavailable. Reconnect your wallet before switching networks."); return; }
     setWalletBusy(true);
-    try { await switchToXLayer(provider); setWalletChainId(XLAYER_TESTNET_CHAIN_ID); setWalletStatus("connected"); setNotice({ kind: "success", text: "OKX Wallet switched to X Layer testnet." }); }
+    try { await switchToXLayer(provider); setWalletChainId(XLAYER_TESTNET_CHAIN_ID); setWalletStatus("connected"); setNotice({ kind: "success", text: "Wallet switched to X Layer testnet." }); }
     catch (error) { setWalletStatus(isUserRejected(error) ? "wrong_network" : "error"); setWalletError(isUserRejected(error) ? "Network switch was cancelled." : error instanceof Error ? error.message : "Unable to switch network. Please try again."); }
     finally { setWalletBusy(false); }
   }
 
   async function authorizeRelease(agreementId: string) {
-    const provider = walletProvider ?? getOkxProvider();
-    if (!provider) { setWalletError("OKX Wallet was not detected. Install OKX Wallet before authorizing settlement."); return; }
+    const provider = asEip1193Provider(appKitProvider);
+    if (!provider) { setWalletError("Wallet provider unavailable. Reconnect your wallet before authorizing settlement."); return; }
     if (!walletAddress) { await connectWallet(); return; }
     setWalletBusy(true); setWalletError(null); setSettlementStage("preparing"); setSettlementHash(null);
     let submittedHash: string | null = null;
@@ -378,7 +252,7 @@ function App() {
       const confirmedChainHex = await provider.request({ method: "eth_chainId" }) as string;
       const confirmedChainId = Number.parseInt(confirmedChainHex, 16);
       setWalletChainId(confirmedChainId);
-      if (confirmedChainId !== expectedChainId) throw new Error(`OKX Wallet is on chain ${confirmedChainId}. Switch to X Layer testnet before continuing.`);
+      if (confirmedChainId !== expectedChainId) throw new Error(`Wallet is on chain ${confirmedChainId}. Switch to X Layer testnet before continuing.`);
       const intentResponse = await api<SettlementIntent>(`/api/v1/agreements/${agreementId}/settlement-intent`);
       const previewResponse = await api<{ transactions: { release: { to: string; value: string | bigint; data: string } } }>(`/api/v1/agreements/${agreementId}/chain-preview`);
       const tx = previewResponse.transactions.release;
@@ -431,13 +305,13 @@ function App() {
     {detailPanel}
   </> : activeView === "review" ? <>
     <section className="page-heading compact-heading"><div><div className="eyebrow">Human-in-the-loop control</div><h2>Review <em>queue</em></h2><p>AI can observe. Only policy and a human can authorize the next irreversible step.</p></div><span className="queue-count-badge">{reviewAgreements.length} pending decisions</span></section>
-    <section className="review-workspace"><div className="panel review-list"><PanelHeading title="Pending decisions" kicker="Prioritized by risk" />{reviewAgreements.length ? reviewAgreements.map((agreement) => <QueueRow key={agreement.id} agreement={agreement} selected={agreement.id === selectedId} onClick={() => setSelectedId(agreement.id)} />) : <EmptyState title="Review queue is clear" copy="When evidence arrives, ProofFlow will place it here with the policy result beside it." />}</div><div className="panel review-brief"><PanelHeading title="Decision brief" kicker={selected ? selected.title : "Select an agreement"} />{selected && detail ? <><div className="review-hero"><span className={`state-mark large ${stateTone(selected.state)}`}>{stateIcon(selected.state)}</span><div><StateBadge state={selected.state} /><h3>{selectedDecision === "PASS" ? "Policy is ready for human approval" : selectedDecision === "BLOCK" ? "Policy has blocked release" : "Evidence needs attention"}</h3><p>{selectedDecision === "PASS" ? "Review the evidence and exact release preview before authorizing in OKX Wallet." : "Inspect the deterministic reasons before moving the agreement forward."}</p></div></div><EvidenceReview manifest={detail.manifest ?? { items: [], manifestHash: "", agreementId: selected.id, submittedBy: "", submittedAt: selected.updatedAt }} review={detail.reviewRun} observation={detail.reviewRun?.observation} decision={detail.decision} /><div className="review-actions"><button className="button secondary" onClick={() => navigate("agreements")}>Open full agreement</button>{selected.state === "EVIDENCE_SUBMITTED" && <button className="button primary" onClick={() => void simulate("review")}>Run bounded review</button>}{selected.state === "READY_TO_RELEASE" && <button className="button primary" onClick={() => setReleaseOpen(true)}>Review release</button>}</div></> : <EmptyState title="Select a decision" copy="Choose a review item to see evidence, model provenance, and deterministic policy reasons." />}</div></section>
+    <section className="review-workspace"><div className="panel review-list"><PanelHeading title="Pending decisions" kicker="Prioritized by risk" />{reviewAgreements.length ? reviewAgreements.map((agreement) => <QueueRow key={agreement.id} agreement={agreement} selected={agreement.id === selectedId} onClick={() => setSelectedId(agreement.id)} />) : <EmptyState title="Review queue is clear" copy="When evidence arrives, ProofFlow will place it here with the policy result beside it." />}</div><div className="panel review-brief"><PanelHeading title="Decision brief" kicker={selected ? selected.title : "Select an agreement"} />{selected && detail ? <><div className="review-hero"><span className={`state-mark large ${stateTone(selected.state)}`}>{stateIcon(selected.state)}</span><div><StateBadge state={selected.state} /><h3>{selectedDecision === "PASS" ? "Policy is ready for human approval" : selectedDecision === "BLOCK" ? "Policy has blocked release" : "Evidence needs attention"}</h3><p>{selectedDecision === "PASS" ? "Review the evidence and exact release preview before authorizing in your wallet." : "Inspect the deterministic reasons before moving the agreement forward."}</p></div></div><EvidenceReview manifest={detail.manifest ?? { items: [], manifestHash: "", agreementId: selected.id, submittedBy: "", submittedAt: selected.updatedAt }} review={detail.reviewRun} observation={detail.reviewRun?.observation} decision={detail.decision} /><div className="review-actions"><button className="button secondary" onClick={() => navigate("agreements")}>Open full agreement</button>{selected.state === "EVIDENCE_SUBMITTED" && <button className="button primary" onClick={() => void simulate("review")}>Run bounded review</button>}{selected.state === "READY_TO_RELEASE" && <button className="button primary" onClick={() => setReleaseOpen(true)}>Review release</button>}</div></> : <EmptyState title="Select a decision" copy="Choose a review item to see evidence, model provenance, and deterministic policy reasons." />}</div></section>
   </> : activeView === "activity" ? <>
     <section className="page-heading compact-heading"><div><div className="eyebrow">Append-only record</div><h2>Activity <em>stream</em></h2><p>Every meaningful agreement, evidence, review, and settlement event in sequence.</p></div><span className="verified-pill">✓ Integrity-aware</span></section>
     <section className="activity-layout"><div className="panel activity-panel"><PanelHeading title="Chronological timeline" kicker={selected ? `Showing ${selected.title}` : "Select an agreement to inspect"} />{detail?.audit?.length ? <div className="timeline">{detail.audit.slice().reverse().map((event, index) => <div className="timeline-item" key={event.id}><div className="timeline-rail"><span className="timeline-icon">{index === 0 ? "✦" : "·"}</span></div><div className="timeline-content"><div><b>{event.eventType.replaceAll("_", " ")}</b><time>{relativeTime(event.occurredAt)}</time></div><p>{event.actor} recorded a verifiable workflow event.</p><code>{shortHash(event.eventHash)}</code></div></div>)}</div> : <EmptyState title="Activity will appear here" copy="Select an agreement or create one to begin the append-only timeline." />}</div><div className="panel activity-context"><PanelHeading title="Context" kicker="Current selection" />{selected ? <><StateBadge state={selected.state} /><h3>{selected.title}</h3><p>{lifecycleStage}</p><button className="button secondary full-button" onClick={() => navigate("agreements")}>Open agreement →</button></> : <EmptyState title="No selection" copy="Choose an agreement from the workspace." />}</div></section>
   </> : activeView === "wallet" ? <>
     <section className="page-heading compact-heading"><div><div className="eyebrow">Human authorization boundary</div><h2>Wallet <em>control</em></h2><p>ProofFlow prepares reviewable requests. Your wallet remains the only signer.</p></div><span className="network-status large-status"><span className={network ? "status-dot online" : "status-dot"} />{statusLabel}</span></section>
-    <section className="wallet-page-grid"><div className="panel wallet-hero-panel"><div className="wallet-hero-icon">◈</div><div><span className="eyebrow">OKX Wallet connection</span><h3>{walletAddress ? shortAddress(walletAddress) : "Wallet not connected"}</h3><p>{walletAddress ? walletChainId === XLAYER_TESTNET_CHAIN_ID ? "Connected and ready for X Layer testnet previews." : "Connected, but the active chain needs attention." : "Connect a wallet when you are ready to authorize a settlement."}</p></div>{!walletAddress && <button className="button primary" onClick={() => void connectWallet()}>Connect OKX Wallet</button>}</div><div className="panel"><PanelHeading title="Network" kicker="Observed by ProofFlow" /><div className="network-detail light-detail"><span>Environment</span><code>{statusLabel}</code><span>Chain ID</span><code>{network?.chainId ?? XLAYER_TESTNET_CHAIN_ID}</code><span>Latest block</span><code>{network?.blockNumber ?? "—"}</code></div><button className="button secondary full-button" onClick={() => void loadNetwork()}>Refresh network status</button></div>{selected && detail?.chain && <div className="panel wallet-preview-panel"><PanelHeading title="Selected vault" kicker={selected.title} /><VaultCard chain={detail.chain} walletAddress={walletAddress} walletBusy={walletBusy} walletError={walletError} walletChainId={walletChainId} settlementStage={settlementStage} settlementHash={settlementHash} onConnect={() => void connectWallet()} onSwitchNetwork={() => void switchWalletNetwork()} onReviewRelease={() => setReleaseOpen(true)} /></div>}</section>
+    <section className="wallet-page-grid"><div className="panel wallet-hero-panel"><div className="wallet-hero-icon">◈</div><div><span className="eyebrow">Multi-wallet connection</span><h3>{walletAddress ? shortAddress(walletAddress) : "Wallet not connected"}</h3><p>{walletAddress ? walletChainId === XLAYER_TESTNET_CHAIN_ID ? "Connected and ready for X Layer testnet previews." : "Connected, but the active chain needs attention." : "Connect a wallet when you are ready to authorize a settlement."}</p></div>{!walletAddress && <button className="button primary" onClick={() => void connectWallet()}>Connect Wallet</button>}</div><div className="panel"><PanelHeading title="Network" kicker="Observed by ProofFlow" /><div className="network-detail light-detail"><span>Environment</span><code>{statusLabel}</code><span>Chain ID</span><code>{network?.chainId ?? XLAYER_TESTNET_CHAIN_ID}</code><span>Latest block</span><code>{network?.blockNumber ?? "—"}</code></div><button className="button secondary full-button" onClick={() => void loadNetwork()}>Refresh network status</button></div>{selected && detail?.chain && <div className="panel wallet-preview-panel"><PanelHeading title="Selected vault" kicker={selected.title} /><VaultCard chain={detail.chain} walletAddress={walletAddress} walletBusy={walletBusy} walletError={walletError} walletChainId={walletChainId} settlementStage={settlementStage} settlementHash={settlementHash} onConnect={() => void connectWallet()} onSwitchNetwork={() => void switchWalletNetwork()} onReviewRelease={() => setReleaseOpen(true)} /></div>}</section>
   </> : <>
     <section className="page-heading compact-heading"><div><div className="eyebrow">Workspace configuration</div><h2>Settings <em>and safeguards</em></h2><p>Operational context for this testnet-first ProofFlow workspace.</p></div></section>
     <section className="settings-grid"><div className="panel settings-card"><PanelHeading title="Environment" kicker="Current deployment posture" /><div className="setting-callout"><span className="status-dot online" /><div><b>Testnet-first workspace</b><p>ProofFlow is configured for human-reviewed settlement on X Layer testnet. Never treat this environment as production custody.</p></div></div><InfoRow label="Network" value={statusLabel} /><InfoRow label="API base" value={API_BASE} mono /><InfoRow label="Release model" value="Explicit wallet authorization" /></div><div className="panel settings-card"><PanelHeading title="Trust boundaries" kicker="What ProofFlow will never do" /><ul className="safeguard-list"><li>AI output cannot authorize a transfer.</li><li>Policy decisions are deterministic and reviewable.</li><li>Transaction previews show recipient, amount, chain, and calldata.</li><li>Receipts are reconciled before a settlement is called complete.</li></ul></div><div className="panel settings-card"><PanelHeading title="Demo controls" kicker="Safe local workflow" /><p className="settings-copy">Reset the seeded workspace to demonstrate the full agreement lifecycle from a known state.</p><button className="button secondary" disabled={resetting} onClick={() => void resetDemo()}>{resetting ? "Resetting…" : "Reset demo workspace"}</button></div></section>
@@ -454,12 +328,12 @@ function App() {
     <main id="main-content" className="main-content">
       <header className="topbar">
         <div className="topbar-title"><div className="protocol-kicker"><span className="protocol-pulse" aria-hidden="true" /> PROOFFLOW PROTOCOL · {statusLabel}</div><div className="breadcrumb"><span>Console</span><span aria-hidden="true">/</span><strong>{pageTitle}</strong></div><h1>{pageTitle} <em>{activeView === "overview" ? "command center" : "workspace"}</em></h1><p className="topbar-description">{pageDescription}</p></div>
-        <div className="topbar-actions"><nav className="protocol-nav" aria-label="Protocol navigation"><button className={activeView === "overview" ? "active" : ""} onClick={() => navigate("overview")}>Overview</button><button className={activeView === "agreements" ? "active" : ""} onClick={() => navigate("agreements")}>Agreements</button><button className={activeView === "activity" ? "active" : ""} onClick={() => navigate("activity")}>Audit ledger</button></nav><label className="global-search"><span aria-hidden="true">⌕</span><input value={searchQuery} onChange={(event) => setSearchQuery(event.target.value)} placeholder="Search protocol" aria-label="Search protocol" /></label><button className="icon-button" aria-label="Refresh data" onClick={() => void refresh()}>↻</button><div className="network-status"><span className={network ? "status-dot online" : "status-dot"} /><div><b>{statusLabel}</b><small>{network ? `Block ${network.blockNumber}` : networkError ?? "Checking RPC"}</small></div></div><button className="wallet-chip" onClick={() => navigate("wallet")} aria-label="Open wallet control"><span className="wallet-chip-icon">◈</span><div><b>{walletAddress ? shortAddress(walletAddress) : "Connect wallet"}</b><small>{walletAddress && walletChainId === XLAYER_TESTNET_CHAIN_ID ? "OKX Wallet · ready" : walletAddress ? "OKX Wallet · wrong network" : "OKX Wallet required to settle"}</small></div><span aria-hidden="true">↗</span></button></div>
+        <div className="topbar-actions"><nav className="protocol-nav" aria-label="Protocol navigation"><button className={activeView === "overview" ? "active" : ""} onClick={() => navigate("overview")}>Overview</button><button className={activeView === "agreements" ? "active" : ""} onClick={() => navigate("agreements")}>Agreements</button><button className={activeView === "activity" ? "active" : ""} onClick={() => navigate("activity")}>Audit ledger</button></nav><label className="global-search"><span aria-hidden="true">⌕</span><input value={searchQuery} onChange={(event) => setSearchQuery(event.target.value)} placeholder="Search protocol" aria-label="Search protocol" /></label><button className="icon-button" aria-label="Refresh data" onClick={() => void refresh()}>↻</button><div className="network-status"><span className={network ? "status-dot online" : "status-dot"} /><div><b>{statusLabel}</b><small>{network ? `Block ${network.blockNumber}` : networkError ?? "Checking RPC"}</small></div></div><button className="wallet-chip" onClick={() => navigate("wallet")} aria-label="Open wallet control"><span className="wallet-chip-icon">◈</span><div><b>{walletAddress ? shortAddress(walletAddress) : "Connect wallet"}</b><small>{walletAddress && walletChainId === XLAYER_TESTNET_CHAIN_ID ? "Wallet · ready" : walletAddress ? "Wallet · wrong network" : "Wallet required to settle"}</small></div><span aria-hidden="true">↗</span></button></div>
       </header>
-      <div className="testnet-banner"><span className="banner-signal">!</span><div><b>X Layer testnet · human-authorized execution</b><p>Funds and transactions here are for demonstration only. ProofFlow never signs or moves funds without your explicit OKX Wallet approval.</p></div><span className="banner-mono">CHAIN {network?.chainId ?? XLAYER_TESTNET_CHAIN_ID}</span></div>
+      <div className="testnet-banner"><span className="banner-signal">!</span><div><b>X Layer testnet · human-authorized execution</b><p>Funds and transactions here are for demonstration only. ProofFlow never signs or moves funds without your explicit wallet approval.</p></div><span className="banner-mono">CHAIN {network?.chainId ?? XLAYER_TESTNET_CHAIN_ID}</span></div>
       {notice && <div className={`inline-banner ${notice.kind}`} role="status" aria-live="polite"><span>{notice.kind === "danger" ? "!" : notice.kind === "success" ? "✓" : "i"}</span><p>{notice.text}</p><button className="banner-close" aria-label="Dismiss notification" onClick={() => setNotice(null)}>×</button></div>}
       <div className="page-transition" key={activeView}>{pageContent}</div>
-      <footer className="app-footer" aria-label="ProofFlow resources"><div className="footer-brand"><span className="brand-mark">P</span><div><strong>ProofFlow</strong><small>Enterprise trust infrastructure</small></div></div><div className="footer-links"><div><b>Platform</b><button onClick={() => navigate("overview")}>Overview</button><button onClick={() => navigate("agreements")}>Agreements</button><button onClick={() => navigate("review")}>Reviews</button></div><div><b>Network</b><button onClick={() => navigate("wallet")}>OKX Wallet</button><button onClick={() => navigate("wallet")}>X Layer</button><button onClick={() => navigate("activity")}>Explorer record</button></div><div><b>Resources</b><button onClick={() => navigate("settings")}>Safeguards</button><button onClick={() => navigate("activity")}>Activity</button><button onClick={() => navigate("settings")}>Status</button></div></div><div className="footer-meta"><span>Testnet-first · human authorized</span><span>ProofFlow v0.1.0</span></div></footer>
+      <footer className="app-footer" aria-label="ProofFlow resources"><div className="footer-brand"><span className="brand-mark">P</span><div><strong>ProofFlow</strong><small>Enterprise trust infrastructure</small></div></div><div className="footer-links"><div><b>Platform</b><button onClick={() => navigate("overview")}>Overview</button><button onClick={() => navigate("agreements")}>Agreements</button><button onClick={() => navigate("review")}>Reviews</button></div><div><b>Network</b><button onClick={() => navigate("wallet")}>wallet</button><button onClick={() => navigate("wallet")}>X Layer</button><button onClick={() => navigate("activity")}>Explorer record</button></div><div><b>Resources</b><button onClick={() => navigate("settings")}>Safeguards</button><button onClick={() => navigate("activity")}>Activity</button><button onClick={() => navigate("settings")}>Status</button></div></div><div className="footer-meta"><span>Testnet-first · human authorized</span><span>ProofFlow v0.1.0</span></div></footer>
       {createOpen && <CreateAgreementModal onClose={() => setCreateOpen(false)} onCreated={handleCreated} walletAddress={walletAddress} />}
       {evidenceOpen && selected && <EvidenceModal agreement={selected} onClose={() => setEvidenceOpen(false)} onSubmitted={handleEvidenceSubmitted} />}
       {releaseOpen && selected && detail?.chain && <ReleaseModal agreement={selected} chain={detail.chain} decision={detail.decision} manifest={detail.manifest} walletAddress={walletAddress} walletChainId={walletChainId} walletBusy={walletBusy} walletError={walletError} stage={settlementStage} transactionHash={settlementHash} onClose={() => setReleaseOpen(false)} onConnect={() => void connectWallet()} onSwitchNetwork={() => void switchWalletNetwork()} onAuthorize={() => void authorizeRelease(selected.id)} />}
@@ -477,7 +351,7 @@ function LandingPage({ statusLabel, network, agreements, walletAddress, walletBu
     <header className="landing-header">
       <button className="landing-menu-button" aria-label={menuOpen ? "Close navigation" : "Open navigation"} aria-expanded={menuOpen} onClick={() => setMenuOpen((value) => !value)}><span /><span /><span /></button>
       <button className="landing-brand" onClick={() => go("landing")} aria-label="ProofFlow home"><span className="landing-brand-mark">P</span><span>ProofFlow</span></button>
-      <div className="landing-header-actions"><div className="landing-network"><span className="landing-live-dot" /> <span>{network ? "X LAYER TESTNET · ONLINE" : "X LAYER TESTNET · CHECKING"}</span><code>1952</code></div><button className={`landing-wallet-button ${walletStatus}`} disabled={walletBusy} onClick={onConnect} aria-describedby={walletError ? "landing-wallet-error" : undefined}><span className="landing-wallet-orb" aria-hidden="true">◈</span><span>{walletBusy ? "Connecting…" : walletAddress ? shortAddress(walletAddress) : walletStatus === "unavailable" ? "OKX Wallet not detected" : walletStatus === "wrong_network" ? "Wrong network" : "Connect OKX Wallet"}</span><span className="landing-wallet-arrow" aria-hidden="true">↗</span></button>{walletError && <div className="landing-wallet-feedback" id="landing-wallet-error" role="alert"><span>{walletStatus === "unavailable" ? "Wallet unavailable" : walletStatus === "wrong_network" ? "Wrong network" : "Connection issue"}</span><p>{walletError}</p>{walletStatus === "unavailable" && <a href="https://web3.okx.com/download" target="_blank" rel="noreferrer">Install OKX Wallet ↗</a>}</div>}</div>
+      <div className="landing-header-actions"><div className="landing-network"><span className="landing-live-dot" /> <span>{network ? "X LAYER TESTNET · ONLINE" : "X LAYER TESTNET · CHECKING"}</span><code>1952</code></div><button className={`landing-wallet-button ${walletStatus}`} disabled={walletBusy} onClick={onConnect} aria-describedby={walletError ? "landing-wallet-error" : undefined}><span className="landing-wallet-orb" aria-hidden="true">◈</span><span>{walletBusy ? "Connecting…" : walletAddress ? shortAddress(walletAddress) : walletStatus === "unavailable" ? "wallet not detected" : walletStatus === "wrong_network" ? "Wrong network" : "Connect Wallet"}</span><span className="landing-wallet-arrow" aria-hidden="true">↗</span></button>{walletError && <div className="landing-wallet-feedback" id="landing-wallet-error" role="alert"><span>{walletStatus === "unavailable" ? "Wallet unavailable" : walletStatus === "wrong_network" ? "Wrong network" : "Connection issue"}</span><p>{walletError}</p>{walletStatus === "unavailable" && <a href="https://web3.okx.com/download" target="_blank" rel="noreferrer">Install wallet ↗</a>}</div>}</div>
     </header>
     <div className={`landing-menu-backdrop ${menuOpen ? "is-open" : ""}`} aria-hidden={!menuOpen} onClick={() => setMenuOpen(false)} />
     <aside className={`landing-drawer ${menuOpen ? "is-open" : ""}`} aria-label="ProofFlow navigation">
@@ -501,7 +375,7 @@ function LandingPage({ statusLabel, network, agreements, walletAddress, walletBu
       </section>
       <section className="landing-live-agreements" aria-labelledby="landing-live-agreements-title"><div className="landing-live-heading"><span className="landing-eyebrow">Live agreement stream</span><h2 id="landing-live-agreements-title">Proof in motion.</h2><p>Recent commitments stay visible while they move from evidence to settlement.</p></div><div className="landing-agreement-orbit">{(agreements.length ? agreements.slice(0, 4) : [{ id: "DEMO-01", title: "Awaiting your first agreement", state: "AWAITING_FUNDING", amountBaseUnits: "0", updatedAt: new Date().toISOString() } as Agreement]).map((agreement, index) => <article className={`landing-agreement-card landing-agreement-card-${index + 1}`} key={agreement.id}><div className="landing-agreement-topline"><span className={`landing-agreement-state ${stateTone(agreement.state)}`}><i />{stateLabel(agreement.state)}</span><span>{relativeTime(agreement.updatedAt)}</span></div><h3>{agreement.title}</h3><div className="landing-agreement-bottom"><code>{agreement.amountBaseUnits === "0" ? "Live workspace" : `${formatUnits(agreement.amountBaseUnits)} XLAY`}</code><span>{agreement.id}</span></div></article>)}</div></section>
       <section className="landing-proof" aria-label="ProofFlow principles"><div className="landing-proof-intro"><span className="landing-eyebrow">The missing trust layer</span><h2>Commerce needs<br /><em>proof before payment.</em></h2></div><div className="landing-proof-cards"><article><span>01 / EVIDENCE</span><h3>Commit the work.</h3><p>Evidence is submitted as a typed manifest with a canonical content hash before it becomes a decision input.</p></article><article><span>02 / POLICY</span><h3>Gate the release.</h3><p>AI extracts observations. A deterministic policy engine produces RELEASE, REVIEW, or BLOCK.</p></article><article><span>03 / RECEIPT</span><h3>Verify the outcome.</h3><p>A bounded wallet intent meets an X Layer vault and returns an independently inspectable receipt.</p></article></div></section>
-      <section className="landing-how" aria-labelledby="landing-how-title"><div className="landing-how-heading"><span className="landing-eyebrow">New here?</span><h2 id="landing-how-title">How ProofFlow works.</h2><p>Start with the product, not the protocol. ProofFlow protects milestone payments by turning completed work into evidence that can be reviewed before a wallet ever signs.</p></div><div className="landing-how-steps"><article><span>01</span><div><h3>Create the agreement</h3><p>Define the milestone, recipient, amount, deadline, and evidence required for release.</p></div></article><article><span>02</span><div><h3>Submit the proof</h3><p>Upload the evidence. ProofFlow validates, hashes, and records the manifest as the source of truth.</p></div></article><article><span>03</span><div><h3>Review the gate</h3><p>AI observes the evidence. Deterministic policy decides whether the work is ready, blocked, or needs review.</p></div></article><article><span>04</span><div><h3>Authorize and settle</h3><p>When the gate passes, a human reviews the exact transaction in OKX Wallet and X Layer returns the receipt.</p></div></article></div><button className="landing-how-cta" onClick={() => onNavigate("overview")}>Open the product console <span>↗</span></button></section>
+      <section className="landing-how" aria-labelledby="landing-how-title"><div className="landing-how-heading"><span className="landing-eyebrow">New here?</span><h2 id="landing-how-title">How ProofFlow works.</h2><p>Start with the product, not the protocol. ProofFlow protects milestone payments by turning completed work into evidence that can be reviewed before a wallet ever signs.</p></div><div className="landing-how-steps"><article><span>01</span><div><h3>Create the agreement</h3><p>Define the milestone, recipient, amount, deadline, and evidence required for release.</p></div></article><article><span>02</span><div><h3>Submit the proof</h3><p>Upload the evidence. ProofFlow validates, hashes, and records the manifest as the source of truth.</p></div></article><article><span>03</span><div><h3>Review the gate</h3><p>AI observes the evidence. Deterministic policy decides whether the work is ready, blocked, or needs review.</p></div></article><article><span>04</span><div><h3>Authorize and settle</h3><p>When the gate passes, a human reviews the exact transaction in wallet and X Layer returns the receipt.</p></div></article></div><button className="landing-how-cta" onClick={() => onNavigate("overview")}>Open the product console <span>↗</span></button></section>
       <section className="landing-depth" aria-labelledby="landing-depth-title">
         <div className="landing-depth-copy">
           <span className="landing-eyebrow">The ProofFlow sequence</span>
@@ -538,7 +412,7 @@ function LandingPage({ statusLabel, network, agreements, walletAddress, walletBu
   </div>;
 }
 
-function Sidebar({ activeView, network, walletAddress, mobileOpen, onToggle, onConnect, onCreate, onNavigate }: { activeView: View; network: string; walletAddress: string | null; mobileOpen: boolean; onToggle: () => void; onConnect: () => void; onCreate: () => void; onNavigate: (view: View) => void }) { const items: { view: View; icon: string; label: string }[] = [{ view: "overview", icon: "⌂", label: "Overview" }, { view: "agreements", icon: "▣", label: "Agreements" }, { view: "review", icon: "◌", label: "Review queue" }, { view: "activity", icon: "≡", label: "Activity" }]; return <><div className={`mobile-nav-backdrop ${mobileOpen ? "is-open" : ""}`} aria-hidden={!mobileOpen} onClick={onToggle} /><aside className={`sidebar ${mobileOpen ? "mobile-open" : ""}`}><div className="brand"><span className="brand-mark">P</span><span>ProofFlow</span><button className="mobile-menu-button" aria-label={mobileOpen ? "Close navigation" : "Open navigation"} aria-expanded={mobileOpen} onClick={onToggle}>{mobileOpen ? "×" : "☰"}</button></div><div className="workspace-select"><span className="workspace-avatar">T</span><span><b>Trust operations</b><small>Workspace</small></span><span>⌄</span></div><button className="button primary create-side" onClick={onCreate}>+ Create agreement</button><nav className="side-nav" aria-label="Primary navigation">{items.map((item) => <button key={item.view} className={activeView === item.view ? "active" : ""} aria-current={activeView === item.view ? "page" : undefined} onClick={() => onNavigate(item.view)}><span className="nav-icon" aria-hidden="true">{item.icon}</span><span>{item.label}</span>{item.view === "review" && <b>{item.view === activeView ? "" : ""}</b>}</button>)}</nav><div className="side-divider" /><nav className="side-nav secondary-nav" aria-label="Workspace settings"><button className={activeView === "wallet" ? "active" : ""} aria-current={activeView === "wallet" ? "page" : undefined} onClick={() => onNavigate("wallet")}><span className="nav-icon" aria-hidden="true">◈</span><span>Wallet</span></button><button className={activeView === "settings" ? "active" : ""} aria-current={activeView === "settings" ? "page" : undefined} onClick={() => onNavigate("settings")}><span className="nav-icon" aria-hidden="true">⚙</span><span>Settings</span></button></nav><div className="sidebar-bottom"><div className="side-network"><span className={`status-dot ${network.includes("offline") ? "" : "online"}`} /><div><small>Network</small><b>{network}</b></div></div><button className="wallet-side" onClick={onConnect}><span className="wallet-icon">◈</span><span><small>{walletAddress ? "Connected with OKX Wallet" : "Settlement wallet"}</small><b>{walletAddress ? shortAddress(walletAddress) : "Connect OKX Wallet"}</b></span><span>↗</span></button><div className="side-footer"><span>Testnet-first</span><span>v0.1.0</span></div></div></aside></>; }
+function Sidebar({ activeView, network, walletAddress, mobileOpen, onToggle, onConnect, onCreate, onNavigate }: { activeView: View; network: string; walletAddress: string | null; mobileOpen: boolean; onToggle: () => void; onConnect: () => void; onCreate: () => void; onNavigate: (view: View) => void }) { const items: { view: View; icon: string; label: string }[] = [{ view: "overview", icon: "⌂", label: "Overview" }, { view: "agreements", icon: "▣", label: "Agreements" }, { view: "review", icon: "◌", label: "Review queue" }, { view: "activity", icon: "≡", label: "Activity" }]; return <><div className={`mobile-nav-backdrop ${mobileOpen ? "is-open" : ""}`} aria-hidden={!mobileOpen} onClick={onToggle} /><aside className={`sidebar ${mobileOpen ? "mobile-open" : ""}`}><div className="brand"><span className="brand-mark">P</span><span>ProofFlow</span><button className="mobile-menu-button" aria-label={mobileOpen ? "Close navigation" : "Open navigation"} aria-expanded={mobileOpen} onClick={onToggle}>{mobileOpen ? "×" : "☰"}</button></div><div className="workspace-select"><span className="workspace-avatar">T</span><span><b>Trust operations</b><small>Workspace</small></span><span>⌄</span></div><button className="button primary create-side" onClick={onCreate}>+ Create agreement</button><nav className="side-nav" aria-label="Primary navigation">{items.map((item) => <button key={item.view} className={activeView === item.view ? "active" : ""} aria-current={activeView === item.view ? "page" : undefined} onClick={() => onNavigate(item.view)}><span className="nav-icon" aria-hidden="true">{item.icon}</span><span>{item.label}</span>{item.view === "review" && <b>{item.view === activeView ? "" : ""}</b>}</button>)}</nav><div className="side-divider" /><nav className="side-nav secondary-nav" aria-label="Workspace settings"><button className={activeView === "wallet" ? "active" : ""} aria-current={activeView === "wallet" ? "page" : undefined} onClick={() => onNavigate("wallet")}><span className="nav-icon" aria-hidden="true">◈</span><span>Wallet</span></button><button className={activeView === "settings" ? "active" : ""} aria-current={activeView === "settings" ? "page" : undefined} onClick={() => onNavigate("settings")}><span className="nav-icon" aria-hidden="true">⚙</span><span>Settings</span></button></nav><div className="sidebar-bottom"><div className="side-network"><span className={`status-dot ${network.includes("offline") ? "" : "online"}`} /><div><small>Network</small><b>{network}</b></div></div><button className="wallet-side" onClick={onConnect}><span className="wallet-icon">◈</span><span><small>{walletAddress ? "Connected wallet" : "Settlement wallet"}</small><b>{walletAddress ? shortAddress(walletAddress) : "Connect Wallet"}</b></span><span>↗</span></button><div className="side-footer"><span>Testnet-first</span><span>v0.1.0</span></div></div></aside></>; }
 function Metric({ label, value, detail, tone = "", numeric }: { label: string; value: string; detail: string; tone?: string; numeric?: number }) { return <SpotlightCard className={`metric ${tone}`}><span className="metric-label">{label}</span><strong>{numeric === undefined ? value : <CountUp value={numeric} />}</strong><small>{detail}</small><span className="metric-sheen" aria-hidden="true" /></SpotlightCard>; }
 function PanelHeading({ title, kicker, action }: { title: string; kicker: string; action?: ReactNode }) { return <div className="panel-heading"><div><span>{kicker}</span><h3>{title}</h3></div>{action}</div>; }
 function QueueRow({ agreement, selected, onClick }: { agreement: Agreement; selected: boolean; onClick: () => void }) { return <SpotlightCard interactive ariaLabel={`Open agreement ${agreement.title}`} className={`queue-row ${selected ? "selected" : ""}`} onClick={onClick}><span className={`state-mark ${stateTone(agreement.state)}`}>{stateIcon(agreement.state)}</span><span className="queue-main"><b>{agreement.title}</b><small>{agreement.id}</small></span><span className="queue-action">{priorityReason(agreement.state)}</span><span className="queue-amount">{formatUnits(agreement.amountBaseUnits)} XLAY</span><span className="queue-date">{relativeTime(agreement.updatedAt)}</span></SpotlightCard>; }
@@ -550,8 +424,8 @@ function StateBadge({ state }: { state: Agreement["state"] }) { return <span cla
 function Lifecycle({ state }: { state: Agreement["state"] }) { const steps: Agreement["state"][] = [JobState.AWAITING_FUNDING, JobState.FUNDED, JobState.EVIDENCE_SUBMITTED, JobState.UNDER_REVIEW, JobState.READY_TO_RELEASE, JobState.RELEASED]; const index = state === JobState.REVIEWED ? 4 : steps.indexOf(state); return <div className="lifecycle" aria-label="Agreement lifecycle">{steps.map((step, i) => <div className={`lifecycle-step ${i < index ? "complete" : i === index ? "current" : ""}`} key={step}><span>{i < index ? "✓" : i + 1}</span><small>{lifecycleLabel(step)}</small></div>)}</div>; }
 function EvidenceReview({ manifest, review, observation, decision }: { manifest: EvidenceManifest; review: ReviewRun | null | undefined; observation: ReviewRun["observation"] | undefined; decision: PolicyDecision | null }) { const tone = decision?.outcome === "PASS" ? "pass" : decision?.outcome === "BLOCK" ? "danger" : "warning"; return <div className="evidence-review"><div className="evidence-summary"><div className={`summary-icon ${tone}`}>{decision?.outcome === "BLOCK" ? "!" : "✓"}</div><div><b>{review ? "AI observation complete" : "Evidence manifest received"}</b><p>{review ? `Structured observations from ${review.provider.model}. Advisory only.` : "Waiting for a bounded review run."}</p></div>{review && <span className="confidence-value">{(review.observation.confidenceBps / 100).toFixed(0)}%<small>confidence</small></span>}</div><div className="trust-boundary"><span>AI observes</span><i>→</i><span className="policy-chip">Policy decides</span><i>→</i><span className={`${tone}-chip`}>{decision?.outcome ?? "Awaiting gate"}</span></div><div className="evidence-list">{manifest.items.map((item) => <div className="evidence-item" key={item.sha256}><span className="file-icon">□</span><span><b>{item.name}</b><small>{item.type} · {item.mediaType}</small></span><code>{shortHash(item.sha256)}</code><span className="pass-text">✓ verified</span></div>)}</div>{observation && <div className="facts"><span className="eyebrow">Extracted facts</span>{observation.extractedFacts.map((fact) => <div className="fact" key={`${fact.key}-${fact.source}`}><b>{fact.key}</b><span>{fact.value}</span><small>Source: {fact.source}</small></div>)}</div>}{decision && <div className="decision-box"><div><span className="eyebrow">Deterministic gate · {decision.policyVersion}</span><b>{decision.outcome === "PASS" ? "Release conditions pass" : decision.outcome === "BLOCK" ? "Release blocked" : "Human review required"}</b></div><span className="mono">{shortHash(decision.policyHash)}</span>{decision.reasons.length > 0 && <ul>{decision.reasons.map((reason) => <li key={reason}>{reason}</li>)}</ul>}</div>}</div>; }
 function AuditTrail({ events }: { events: AuditEvent[] }) { return events.length ? <div className="audit-list">{events.slice().reverse().map((event) => <div className="audit-item" key={event.id}><span className="audit-dot" /><div><b>{event.eventType.replaceAll("_", " ")}</b><p>{event.actor} · {relativeTime(event.occurredAt)}</p></div><code>{shortHash(event.eventHash)}</code></div>)}</div> : <EmptyState title="No audit events yet" copy="Lifecycle events will appear here as this agreement changes." />; }
-function VaultCard({ chain, walletAddress, walletBusy, walletError, walletChainId, settlementStage, settlementHash, onConnect, onSwitchNetwork, onReviewRelease }: { chain: ChainPreview; walletAddress: string | null; walletBusy: boolean; walletError: string | null; walletChainId: number | null; settlementStage: SettlementStage; settlementHash: string | null; onConnect: () => void; onSwitchNetwork: () => void; onReviewRelease: () => void }) { const expectedChainId = Number(import.meta.env.VITE_XLAYER_CHAIN_ID ?? XLAYER_TESTNET_CHAIN_ID); const release = chain.transactions.release; const canReview = chain.vault.funded && !chain.vault.released; const stageCopy: Record<SettlementStage, string> = { idle: "", preparing: "Checking the exact intent and network.", ready: "Ready for your review.", awaiting_wallet: "Confirm the exact transaction in OKX Wallet.", submitted: "Transaction submitted; receipt not final yet.", confirming: "ProofFlow is checking the receipt and release event.", confirmed: "Verified receipt reconciled on X Layer.", failed: "The chain did not confirm this release.", unknown: "Confirmation uncertain. Refresh before retrying." }; const copy = (value: string) => void navigator.clipboard?.writeText(value); return <div className="vault-card"><div className="vault-state"><span className={`status-dot ${chain.vault.released ? "online" : chain.vault.funded ? "online" : ""}`} /><div><b>{chain.vault.released ? "Released" : chain.vault.funded ? "Funded" : "Awaiting funding"}</b><small>{chain.vault.released ? "Final receipt reconciled" : chain.vault.funded ? "Funds held by the vault" : "Fund the agreement to continue"}</small></div><span className="chain-chip">CHAIN {chain.network.chainId}</span></div><InfoRow label="Vault" value={shortAddress(chain.vault.address)} mono /><InfoRow label="Balance" value={`${formatUnits(chain.vault.balance)} XLAY`} /><div className="preview-block"><div className="preview-heading"><span className="eyebrow">Exact settlement intent</span><span className="intent-lock">No opaque signing</span></div><div className="tx-preview featured"><div className="tx-preview-heading"><div><span className="eyebrow">Native release</span><b>{formatUnits(release.value)} XLAY to recipient</b></div><span className="tx-safety">Reviewable</span></div><div className="tx-facts"><InfoRow label="Recipient" value={shortAddress(chain.vault.recipient)} mono /><InfoRow label="Vault contract" value={shortAddress(release.to)} mono /><InfoRow label="Network" value={`X Layer testnet · ${chain.network.chainId}`} /><InfoRow label="Calldata" value={shortHash(release.data)} mono /></div><details className="technical-details"><summary>Inspect calldata and full addresses</summary><div className="technical-body"><InfoRow label="To" value={release.to} mono /><InfoRow label="Data" value={release.data} mono /><button className="copy-button" onClick={() => copy(JSON.stringify(release, null, 2))}>Copy transaction JSON</button></div></details><p className="tx-disclaimer">ProofFlow prepares this exact request. OKX Wallet shows it before you approve. A signature is not a confirmed payment.</p>{canReview && <button className="button primary full-button" disabled={walletBusy} onClick={onReviewRelease}>Review release in OKX Wallet</button>}</div></div><div className="wallet-connection"><div className="wallet-connection-top"><div><span className="eyebrow">Authorization boundary</span><b>{walletAddress ? `OKX Wallet · ${shortAddress(walletAddress)}` : "OKX Wallet not connected"}</b><small>{walletAddress ? walletChainId === expectedChainId ? "On X Layer testnet" : "Wrong network" : "Only your wallet can authorize funds"}</small></div><span className={`wallet-check ${walletAddress && walletChainId === expectedChainId ? "ok" : ""}`}>{walletAddress && walletChainId === expectedChainId ? "✓" : "—"}</span></div>{walletError && <div className="wallet-error" role="alert">{walletError}</div>}{walletAddress && walletChainId !== expectedChainId ? <button className="button secondary full-button" onClick={onSwitchNetwork}>Switch OKX Wallet to X Layer</button> : <button className="button secondary full-button" onClick={onConnect}>{walletAddress ? "Reconnect OKX Wallet" : "Connect OKX Wallet"}</button>}{settlementStage !== "idle" && <div className={`settlement-status ${settlementStage}`} role="status" aria-live="polite"><span className="stage-marker">{stageIcon(settlementStage)}</span><div><b>{stageTitle(settlementStage)}</b><small>{stageCopy[settlementStage]}{settlementHash ? ` · ${shortHash(settlementHash)}` : ""}</small></div></div>}</div></div>; }
-function ReleaseModal({ agreement, chain, decision, manifest, walletAddress, walletChainId, walletBusy, walletError, stage, transactionHash, onClose, onConnect, onSwitchNetwork, onAuthorize }: { agreement: Agreement; chain: ChainPreview; decision: PolicyDecision | null; manifest: EvidenceManifest | null; walletAddress: string | null; walletChainId: number | null; walletBusy: boolean; walletError: string | null; stage: SettlementStage; transactionHash: string | null; onClose: () => void; onConnect: () => void; onSwitchNetwork: () => void; onAuthorize: () => void }) { const expectedChainId = Number(import.meta.env.VITE_XLAYER_CHAIN_ID ?? XLAYER_TESTNET_CHAIN_ID); const [detailsOpen, setDetailsOpen] = useState(false); const signed = ["submitted", "confirming", "confirmed", "unknown"].includes(stage); const canAuthorize = detailsOpen && Boolean(walletAddress) && walletChainId === expectedChainId && !walletBusy && !signed; return <Modal title={signed ? stageTitle(stage) : "Ready to release"} eyebrow={signed ? "Settlement lifecycle" : "Human authorization required"} onClose={signed ? () => undefined : onClose} closeDisabled={signed}><div className="release-modal"><div className="release-lead"><span className="state-mark large pass">✓</span><div><b>{signed ? stageCopy(stage) : "Review the exact transaction before signing."}</b><p>{signed ? (transactionHash ? `Transaction ${shortHash(transactionHash)} is being tracked.` : "ProofFlow is tracking the settlement state.") : "This action is irreversible once the vault accepts it."}</p></div></div><div className="release-summary"><InfoRow label="Agreement" value={agreement.title} /><InfoRow label="Amount" value={`${formatUnits(chain.transactions.release.value)} XLAY`} /><InfoRow label="Recipient" value={chain.vault.recipient} mono /><InfoRow label="Network" value={`X Layer testnet · chain ${chain.network.chainId}`} /><InfoRow label="Vault contract" value={chain.vault.address} mono /></div><details className="technical-details comprehension" open={detailsOpen} onToggle={(event) => setDetailsOpen((event.currentTarget as HTMLDetailsElement).open)}><summary>I understand what will be authorized</summary><div className="technical-body"><p className="form-note">The transaction releases the displayed amount from the displayed vault to the displayed recipient. ProofFlow cannot change the recipient or amount after this preview.</p><InfoRow label="Evidence manifest" value={manifest ? shortHash(manifest.manifestHash) : "Not available"} mono /><InfoRow label="Policy" value={decision ? `${decision.policyVersion} · ${shortHash(decision.policyHash)}` : "Not available"} mono /></div></details>{walletError && <div className="form-error" role="alert">{walletError}</div>}{!walletAddress ? <button className="button secondary full-button" onClick={onConnect}>Connect OKX Wallet</button> : walletChainId !== expectedChainId ? <button className="button secondary full-button" onClick={onSwitchNetwork}>Switch OKX Wallet to X Layer</button> : null}<div className="modal-actions"><button type="button" className="button secondary" onClick={onClose} disabled={signed}>Cancel</button><button type="button" className="button primary" disabled={!canAuthorize} onClick={onAuthorize}>{walletBusy ? "Waiting for OKX Wallet…" : signed ? stageTitle(stage) : "Authorize release in OKX Wallet"}</button></div></div></Modal>; }
+function VaultCard({ chain, walletAddress, walletBusy, walletError, walletChainId, settlementStage, settlementHash, onConnect, onSwitchNetwork, onReviewRelease }: { chain: ChainPreview; walletAddress: string | null; walletBusy: boolean; walletError: string | null; walletChainId: number | null; settlementStage: SettlementStage; settlementHash: string | null; onConnect: () => void; onSwitchNetwork: () => void; onReviewRelease: () => void }) { const expectedChainId = Number(import.meta.env.VITE_XLAYER_CHAIN_ID ?? XLAYER_TESTNET_CHAIN_ID); const release = chain.transactions.release; const canReview = chain.vault.funded && !chain.vault.released; const stageCopy: Record<SettlementStage, string> = { idle: "", preparing: "Checking the exact intent and network.", ready: "Ready for your review.", awaiting_wallet: "Confirm the exact transaction in your wallet.", submitted: "Transaction submitted; receipt not final yet.", confirming: "ProofFlow is checking the receipt and release event.", confirmed: "Verified receipt reconciled on X Layer.", failed: "The chain did not confirm this release.", unknown: "Confirmation uncertain. Refresh before retrying." }; const copy = (value: string) => void navigator.clipboard?.writeText(value); return <div className="vault-card"><div className="vault-state"><span className={`status-dot ${chain.vault.released ? "online" : chain.vault.funded ? "online" : ""}`} /><div><b>{chain.vault.released ? "Released" : chain.vault.funded ? "Funded" : "Awaiting funding"}</b><small>{chain.vault.released ? "Final receipt reconciled" : chain.vault.funded ? "Funds held by the vault" : "Fund the agreement to continue"}</small></div><span className="chain-chip">CHAIN {chain.network.chainId}</span></div><InfoRow label="Vault" value={shortAddress(chain.vault.address)} mono /><InfoRow label="Balance" value={`${formatUnits(chain.vault.balance)} XLAY`} /><div className="preview-block"><div className="preview-heading"><span className="eyebrow">Exact settlement intent</span><span className="intent-lock">No opaque signing</span></div><div className="tx-preview featured"><div className="tx-preview-heading"><div><span className="eyebrow">Native release</span><b>{formatUnits(release.value)} XLAY to recipient</b></div><span className="tx-safety">Reviewable</span></div><div className="tx-facts"><InfoRow label="Recipient" value={shortAddress(chain.vault.recipient)} mono /><InfoRow label="Vault contract" value={shortAddress(release.to)} mono /><InfoRow label="Network" value={`X Layer testnet · ${chain.network.chainId}`} /><InfoRow label="Calldata" value={shortHash(release.data)} mono /></div><details className="technical-details"><summary>Inspect calldata and full addresses</summary><div className="technical-body"><InfoRow label="To" value={release.to} mono /><InfoRow label="Data" value={release.data} mono /><button className="copy-button" onClick={() => copy(JSON.stringify(release, null, 2))}>Copy transaction JSON</button></div></details><p className="tx-disclaimer">ProofFlow prepares this exact request. Your wallet shows it before you approve. A signature is not a confirmed payment.</p>{canReview && <button className="button primary full-button" disabled={walletBusy} onClick={onReviewRelease}>Review release in wallet</button>}</div></div><div className="wallet-connection"><div className="wallet-connection-top"><div><span className="eyebrow">Authorization boundary</span><b>{walletAddress ? `wallet · ${shortAddress(walletAddress)}` : "Wallet not connected"}</b><small>{walletAddress ? walletChainId === expectedChainId ? "On X Layer testnet" : "Wrong network" : "Only your wallet can authorize funds"}</small></div><span className={`wallet-check ${walletAddress && walletChainId === expectedChainId ? "ok" : ""}`}>{walletAddress && walletChainId === expectedChainId ? "✓" : "—"}</span></div>{walletError && <div className="wallet-error" role="alert">{walletError}</div>}{walletAddress && walletChainId !== expectedChainId ? <button className="button secondary full-button" onClick={onSwitchNetwork}>Switch wallet to X Layer</button> : <button className="button secondary full-button" onClick={onConnect}>{walletAddress ? "Reconnect wallet" : "Connect Wallet"}</button>}{settlementStage !== "idle" && <div className={`settlement-status ${settlementStage}`} role="status" aria-live="polite"><span className="stage-marker">{stageIcon(settlementStage)}</span><div><b>{stageTitle(settlementStage)}</b><small>{stageCopy[settlementStage]}{settlementHash ? ` · ${shortHash(settlementHash)}` : ""}</small></div></div>}</div></div>; }
+function ReleaseModal({ agreement, chain, decision, manifest, walletAddress, walletChainId, walletBusy, walletError, stage, transactionHash, onClose, onConnect, onSwitchNetwork, onAuthorize }: { agreement: Agreement; chain: ChainPreview; decision: PolicyDecision | null; manifest: EvidenceManifest | null; walletAddress: string | null; walletChainId: number | null; walletBusy: boolean; walletError: string | null; stage: SettlementStage; transactionHash: string | null; onClose: () => void; onConnect: () => void; onSwitchNetwork: () => void; onAuthorize: () => void }) { const expectedChainId = Number(import.meta.env.VITE_XLAYER_CHAIN_ID ?? XLAYER_TESTNET_CHAIN_ID); const [detailsOpen, setDetailsOpen] = useState(false); const signed = ["submitted", "confirming", "confirmed", "unknown"].includes(stage); const canAuthorize = detailsOpen && Boolean(walletAddress) && walletChainId === expectedChainId && !walletBusy && !signed; return <Modal title={signed ? stageTitle(stage) : "Ready to release"} eyebrow={signed ? "Settlement lifecycle" : "Human authorization required"} onClose={signed ? () => undefined : onClose} closeDisabled={signed}><div className="release-modal"><div className="release-lead"><span className="state-mark large pass">✓</span><div><b>{signed ? stageCopy(stage) : "Review the exact transaction before signing."}</b><p>{signed ? (transactionHash ? `Transaction ${shortHash(transactionHash)} is being tracked.` : "ProofFlow is tracking the settlement state.") : "This action is irreversible once the vault accepts it."}</p></div></div><div className="release-summary"><InfoRow label="Agreement" value={agreement.title} /><InfoRow label="Amount" value={`${formatUnits(chain.transactions.release.value)} XLAY`} /><InfoRow label="Recipient" value={chain.vault.recipient} mono /><InfoRow label="Network" value={`X Layer testnet · chain ${chain.network.chainId}`} /><InfoRow label="Vault contract" value={chain.vault.address} mono /></div><details className="technical-details comprehension" open={detailsOpen} onToggle={(event) => setDetailsOpen((event.currentTarget as HTMLDetailsElement).open)}><summary>I understand what will be authorized</summary><div className="technical-body"><p className="form-note">The transaction releases the displayed amount from the displayed vault to the displayed recipient. ProofFlow cannot change the recipient or amount after this preview.</p><InfoRow label="Evidence manifest" value={manifest ? shortHash(manifest.manifestHash) : "Not available"} mono /><InfoRow label="Policy" value={decision ? `${decision.policyVersion} · ${shortHash(decision.policyHash)}` : "Not available"} mono /></div></details>{walletError && <div className="form-error" role="alert">{walletError}</div>}{!walletAddress ? <button className="button secondary full-button" onClick={onConnect}>Connect Wallet</button> : walletChainId !== expectedChainId ? <button className="button secondary full-button" onClick={onSwitchNetwork}>Switch wallet to X Layer</button> : null}<div className="modal-actions"><button type="button" className="button secondary" onClick={onClose} disabled={signed}>Cancel</button><button type="button" className="button primary" disabled={!canAuthorize} onClick={onAuthorize}>{walletBusy ? "Waiting for wallet…" : signed ? stageTitle(stage) : "Authorize release in wallet"}</button></div></div></Modal>; }
 function SkeletonRows() { return <div className="skeleton-rows" aria-label="Loading"><span /><span /><span /></div>; }
 function EmptyState({ title, copy }: { title: string; copy: string }) { return <div className="empty-state"><span className="empty-orbit" aria-hidden="true">○</span><b>{title}</b><p>{copy}</p><button className="empty-action" type="button" onClick={() => document.querySelector<HTMLElement>(".create-side")?.click()}>Create an agreement <span aria-hidden="true">↗</span></button></div>; }
 function AppErrorBoundary({ children }: { children: ReactNode }) { return <>{children}</>; }
@@ -586,11 +460,13 @@ function stateCopy(state: Agreement["state"]) { const copy: Partial<Record<Agree
 function nextAction(state: Agreement["state"]) { return state === "AWAITING_FUNDING" ? "Fund agreement" : state === "FUNDED" ? "Submit evidence" : state === "EVIDENCE_SUBMITTED" ? "Run review" : state === "READY_TO_RELEASE" ? "Review release" : "Inspect details"; }
 function priorityReason(state: Agreement["state"]) { return state === "BLOCKED" ? "Blocked — inspect policy" : state === "DISPUTED" ? "Disputed — review" : state === "UNDER_REVIEW" ? "Human review needed" : state === "EVIDENCE_SUBMITTED" ? "Run policy review" : state === "AWAITING_FUNDING" ? "Fund vault" : "Monitor settlement"; }
 function sortPriority(agreements: Agreement[]) { const weight: Record<string, number> = { BLOCKED: 0, DISPUTED: 1, UNDER_REVIEW: 2, EVIDENCE_SUBMITTED: 3, AWAITING_FUNDING: 4, READY_TO_RELEASE: 5, RELEASED: 6 }; return [...agreements].sort((a, b) => (weight[a.state] ?? 9) - (weight[b.state] ?? 9)); }
-function stageTitle(stage: SettlementStage) { const labels: Record<SettlementStage, string> = { idle: "Settlement idle", preparing: "Preparing settlement", ready: "Ready for review", awaiting_wallet: "Confirm in OKX Wallet", submitted: "Submitted to X Layer", confirming: "Confirming receipt", confirmed: "Verified on X Layer", failed: "Settlement failed", unknown: "Confirmation uncertain" }; return labels[stage]; }
-function stageCopy(stage: SettlementStage) { const copy: Record<SettlementStage, string> = { idle: "", preparing: "Checking the exact intent and network.", ready: "Ready for your review.", awaiting_wallet: "Confirm the exact transaction in OKX Wallet.", submitted: "Transaction submitted; receipt not final yet.", confirming: "ProofFlow is checking the receipt and release event.", confirmed: "Verified receipt reconciled on X Layer.", failed: "The chain did not confirm this release.", unknown: "Confirmation uncertain. Refresh before retrying." }; return copy[stage]; }
+function stageTitle(stage: SettlementStage) { const labels: Record<SettlementStage, string> = { idle: "Settlement idle", preparing: "Preparing settlement", ready: "Ready for review", awaiting_wallet: "Confirm in wallet", submitted: "Submitted to X Layer", confirming: "Confirming receipt", confirmed: "Verified on X Layer", failed: "Settlement failed", unknown: "Confirmation uncertain" }; return labels[stage]; }
+function stageCopy(stage: SettlementStage) { const copy: Record<SettlementStage, string> = { idle: "", preparing: "Checking the exact intent and network.", ready: "Ready for your review.", awaiting_wallet: "Confirm the exact transaction in your wallet.", submitted: "Transaction submitted; receipt not final yet.", confirming: "ProofFlow is checking the receipt and release event.", confirmed: "Verified receipt reconciled on X Layer.", failed: "The chain did not confirm this release.", unknown: "Confirmation uncertain. Refresh before retrying." }; return copy[stage]; }
 function stageIcon(stage: SettlementStage) { return stage === "confirmed" ? "✓" : stage === "failed" ? "!" : stage === "unknown" ? "?" : stage === "submitted" || stage === "confirming" ? "◌" : "·"; }
 
-createRoot(document.getElementById("root")!).render(<StrictMode><AppErrorBoundary><App /><Analytics /></AppErrorBoundary></StrictMode>);
+const queryClient = new QueryClient();
+
+createRoot(document.getElementById("root")!).render(<StrictMode><WagmiProvider config={wagmiConfig}><QueryClientProvider client={queryClient}><AppKitProvider projectId={import.meta.env.VITE_REOWN_PROJECT_ID ?? ""} networks={walletAppKit.options.networks} adapters={[walletAppKit.chainAdapters.eip155].filter(Boolean) as never}><AppErrorBoundary><App /><Analytics /></AppErrorBoundary></AppKitProvider></QueryClientProvider></WagmiProvider></StrictMode>);
 
 function CreateAgreementModal({ onClose, onCreated, walletAddress }: { onClose: () => void; onCreated: (agreement: Agreement) => Promise<void>; walletAddress: string | null }) {
   const evidenceOptions: Array<{ type: EvidenceType; label: string; description: string }> = [
