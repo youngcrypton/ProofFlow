@@ -1,4 +1,6 @@
+import { createHmac, timingSafeEqual } from "node:crypto";
 import { Hono } from "hono";
+import type { Context } from "hono";
 import { cors } from "hono/cors";
 import { z } from "zod";
 import {
@@ -12,7 +14,8 @@ import {
   SettlementIntentSchema,
   canonicalizeEvidenceManifest,
   canonicalizePolicy,
-  evaluatePolicy
+  evaluatePolicy,
+  normalizeEvmAddress
 } from "@proofflow/domain";
 import { MemoryRepository } from "./memory-repository";
 import type { ProofFlowRepository } from "./repository";
@@ -21,6 +24,11 @@ import { ProofFlowVaultClient, XLayerClient } from "./xlayer";
 import { runReview, createReviewProvider } from "./reviewer";
 import { logStructured, Observability, routeLabel } from "./observability";
 import { EvidenceStore } from "./evidence-store";
+import { recoverMessageAddress } from "viem";
+import type { Hex } from "viem";
+
+type AppVariables = { walletAddress?: string };
+type WalletChallenge = { address: string; nonce: string; message: string; expiresAt: number };
 
 const MAX_BODY_BYTES = 1_000_000;
 const MAX_UPLOAD_BODY_BYTES = 12_000_000;
@@ -29,8 +37,10 @@ const RATE_LIMIT = Number(process.env.PROOFFLOW_RATE_LIMIT ?? 60);
 const RPC_TIMEOUT_MS = Number(process.env.PROOFFLOW_RPC_TIMEOUT_MS ?? 8_000);
 const DEFAULT_ALLOWED_ORIGIN = "http://localhost:5173";
 const CORS_ALLOWED_METHODS = ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"];
-const CORS_ALLOWED_HEADERS = ["Content-Type", "Accept", "Authorization", "X-Request-Id"];
+const CORS_ALLOWED_HEADERS = ["Content-Type", "Accept", "Authorization", "X-Request-Id", "X-ProofFlow-Wallet-Session"];
 const requestBuckets = new Map<string, { startedAt: number; count: number }>();
+const WALLET_SESSION_TTL_MS = 15 * 60_000;
+const WALLET_CHALLENGE_TTL_MS = 5 * 60_000;
 
 export function parseAllowedOrigins(value = process.env.PROOFFLOW_ALLOWED_ORIGIN): string[] {
   return (value ?? DEFAULT_ALLOWED_ORIGIN)
@@ -52,13 +62,44 @@ function isMultipartUpload(request: Request): boolean {
 }
 
 export function createApp(repository: ProofFlowRepository = new MemoryRepository(), observability = new Observability(), evidenceStore = new EvidenceStore()) {
-  const app = new Hono();
+  const app = new Hono<{ Variables: AppVariables }>();
   const allowedOrigins = parseAllowedOrigins();
   const xLayerRpcUrl = process.env.XLAYER_RPC_URL ?? "https://testrpc.xlayer.tech/terigon";
   const xLayerChainId = Number(process.env.XLAYER_CHAIN_ID ?? 1952);
   const vaultAddress = process.env.PROOFFLOW_VAULT_ADDRESS;
   const requireAuth = process.env.NODE_ENV === "production" || process.env.PROOFFLOW_REQUIRE_AUTH === "true";
+  const enforceWalletAccess = process.env.NODE_ENV === "production" || process.env.PROOFFLOW_ENFORCE_WALLET_AUTH === "true";
   const apiToken = process.env.PROOFFLOW_API_TOKEN;
+  const walletSessionSecret = process.env.PROOFFLOW_SESSION_SECRET ?? (requireAuth ? null : crypto.randomUUID());
+  const walletChallenges = new Map<string, WalletChallenge>();
+  const walletMessage = (address: string, nonce: string, expiresAt: number) => `ProofFlow wallet access\n\nAddress: ${address}\nNonce: ${nonce}\nExpires: ${new Date(expiresAt).toISOString()}\n\nSign this message to authorize this browser session. It does not authorize a transaction.`;
+  const signSession = (address: string, expiresAt: number, nonce: string) => {
+    if (!walletSessionSecret) return null;
+    const payload = Buffer.from(JSON.stringify({ address, expiresAt, nonce })).toString("base64url");
+    const signature = createHmac("sha256", walletSessionSecret).update(payload).digest("base64url");
+    return `${payload}.${signature}`;
+  };
+  const verifySession = (token: string | undefined): string | null => {
+    if (!token || !walletSessionSecret) return null;
+    const [payload, suppliedSignature] = token.split(".");
+    if (!payload || !suppliedSignature) return null;
+    const expectedSignature = createHmac("sha256", walletSessionSecret).update(payload).digest("base64url");
+    const supplied = Buffer.from(suppliedSignature);
+    const expected = Buffer.from(expectedSignature);
+    if (supplied.length !== expected.length || !timingSafeEqual(supplied, expected)) return null;
+    try {
+      const parsed = JSON.parse(Buffer.from(payload, "base64url").toString("utf8")) as { address?: string; expiresAt?: number };
+      if (!parsed.address || !/^0x[a-fA-F0-9]{40}$/.test(parsed.address) || !parsed.expiresAt || parsed.expiresAt < Date.now()) return null;
+      return normalizeEvmAddress(parsed.address);
+    } catch { return null; }
+  };
+  const agreementAccess = (c: Context<{ Variables: AppVariables }>, agreement: { payer: string; recipient: string }): Response | null => {
+    if (!enforceWalletAccess) return null;
+    const wallet = c.get("walletAddress");
+    if (!wallet) return c.json({ error: { code: "WALLET_AUTH_REQUIRED", message: "Connect and sign the wallet access message before opening this agreement." } }, 401);
+    if (wallet !== normalizeEvmAddress(agreement.payer) && wallet !== normalizeEvmAddress(agreement.recipient)) return c.json({ error: { code: "FORBIDDEN", message: "This wallet is not a party to the agreement." } }, 403);
+    return null;
+  };
   console.log(`Allowed Origins: ${allowedOrigins.join(", ") || "(none)"}`);
   app.use("*", cors({
     origin: (origin, c) => {
@@ -112,10 +153,12 @@ export function createApp(repository: ProofFlowRepository = new MemoryRepository
   });
 
   app.use("*", async (c, next) => {
-    if (requireAuth && isMutating(c.req.raw)) {
-      if (!apiToken || c.req.header("authorization") !== `Bearer ${apiToken}`) {
-        return c.json({ error: { code: "UNAUTHORIZED", message: "A valid API bearer token is required." } }, 401);
-      }
+    const sessionWallet = verifySession(c.req.header("x-proofflow-wallet-session"));
+    if (sessionWallet) c.set("walletAddress", sessionWallet);
+    const isSessionRoute = c.req.path === "/api/v1/wallet/challenge" || c.req.path === "/api/v1/wallet/session";
+    const hasBearer = Boolean(apiToken && c.req.header("authorization") === `Bearer ${apiToken}`);
+    if (requireAuth && isMutating(c.req.raw) && !isSessionRoute && !hasBearer && !sessionWallet) {
+      return c.json({ error: { code: "UNAUTHORIZED", message: "A valid API bearer token or signed wallet session is required." } }, 401);
     }
     await next();
   });
@@ -147,7 +190,53 @@ export function createApp(repository: ProofFlowRepository = new MemoryRepository
     }
   });
 
-  app.get("/api/v1/agreements", (c) => c.json({ data: repository.listAgreements(), nextCursor: null }));
+  app.post("/api/v1/wallet/challenge", (c) => {
+    const body = z.object({ address: z.string().regex(/^0x[a-fA-F0-9]{40}$/) }).safeParse(c.req.query("address") ? { address: c.req.query("address") } : null);
+    if (!body.success) return c.json({ error: { code: "VALIDATION_ERROR", message: "A valid wallet address is required." } }, 400);
+    if (!walletSessionSecret) return c.json({ error: { code: "SESSION_NOT_CONFIGURED", message: "Wallet sessions are not configured." } }, 503);
+    const address = normalizeEvmAddress(body.data.address);
+    const nonce = crypto.randomUUID();
+    const expiresAt = Date.now() + WALLET_CHALLENGE_TTL_MS;
+    const message = walletMessage(address, nonce, expiresAt);
+    walletChallenges.set(nonce, { address, nonce, message, expiresAt });
+    return c.json({ data: { nonce, message, expiresAt } });
+  });
+
+  app.post("/api/v1/wallet/session", async (c) => {
+    const body = z.object({ address: z.string().regex(/^0x[a-fA-F0-9]{40}$/), nonce: z.string().uuid(), signature: z.string().regex(/^0x[0-9a-fA-F]+$/) }).safeParse(await c.req.json().catch(() => null));
+    if (!body.success) return c.json({ error: { code: "VALIDATION_ERROR", message: "Wallet session proof is invalid." } }, 400);
+    const challenge = walletChallenges.get(body.data.nonce);
+    const address = normalizeEvmAddress(body.data.address);
+    if (!challenge || challenge.expiresAt < Date.now() || challenge.address !== address) return c.json({ error: { code: "CHALLENGE_INVALID", message: "Wallet challenge is missing, expired, or bound to another address." } }, 401);
+    walletChallenges.delete(body.data.nonce);
+    try {
+      const recovered = normalizeEvmAddress(await recoverMessageAddress({ message: challenge.message, signature: body.data.signature as Hex }));
+      if (recovered !== address) return c.json({ error: { code: "SIGNATURE_INVALID", message: "Wallet signature does not match the requested address." } }, 401);
+    } catch { return c.json({ error: { code: "SIGNATURE_INVALID", message: "Wallet signature could not be verified." } }, 401); }
+    const expiresAt = Date.now() + WALLET_SESSION_TTL_MS;
+    const token = signSession(address, expiresAt, body.data.nonce);
+    if (!token) return c.json({ error: { code: "SESSION_NOT_CONFIGURED", message: "Wallet sessions are not configured." } }, 503);
+    return c.json({ data: { token, address, expiresAt } });
+  });
+
+  app.get("/api/v1/agreements", (c) => {
+    const role = c.req.query("role");
+    const address = c.req.query("address");
+    if ((role !== undefined && role !== "client" && role !== "contractor") || (address !== undefined && !/^0x[a-fA-F0-9]{40}$/.test(address))) {
+      return c.json({ error: { code: "VALIDATION_ERROR", message: "role must be client or contractor and address must be a valid EVM address." } }, 400);
+    }
+    if (enforceWalletAccess && !c.get("walletAddress")) return c.json({ error: { code: "WALLET_AUTH_REQUIRED", message: "Connect and sign the wallet access message before listing agreements." } }, 401);
+    if (enforceWalletAccess && address && normalizeEvmAddress(address) !== c.get("walletAddress")) return c.json({ error: { code: "FORBIDDEN", message: "The requested wallet does not match the signed wallet session." } }, 403);
+    const effectiveAddress = address ?? c.get("walletAddress");
+    const agreements = repository.listAgreements().filter((agreement) => {
+      if (!effectiveAddress) return true;
+      const normalizedAddress = normalizeEvmAddress(effectiveAddress);
+      if (role === "client") return normalizeEvmAddress(agreement.payer) === normalizedAddress;
+      if (role === "contractor") return normalizeEvmAddress(agreement.recipient) === normalizedAddress;
+      return normalizeEvmAddress(agreement.payer) === normalizedAddress || normalizeEvmAddress(agreement.recipient) === normalizedAddress;
+    });
+    return c.json({ data: agreements, nextCursor: null });
+  });
 
   app.post("/api/v1/demo/reset", async (c) => {
     if (process.env.NODE_ENV !== "test" && process.env.PROOFFLOW_ENABLE_DEMO_RESET !== "true") return c.json({ error: { code: "DEMO_RESET_DISABLED", message: "Demo reset is disabled outside explicitly enabled development mode." } }, 403);
@@ -186,6 +275,8 @@ export function createApp(repository: ProofFlowRepository = new MemoryRepository
     const id = c.req.param("id");
     const agreement = repository.getAgreement(id);
     if (!agreement) return c.json({ error: { code: "NOT_FOUND", message: "Agreement not found." } }, 404);
+    const accessError = agreementAccess(c, agreement);
+    if (accessError) return accessError;
     if (!vaultAddress || !/^0x[a-fA-F0-9]{40}$/.test(vaultAddress)) return c.json({ error: { code: "VAULT_NOT_CONFIGURED", message: "ProofFlow vault address is not configured." } }, 503);
     try {
       const client = new ProofFlowVaultClient({ rpcUrl: xLayerRpcUrl, expectedChainId: xLayerChainId, vaultAddress: vaultAddress as `0x${string}`, timeoutMs: RPC_TIMEOUT_MS });
@@ -206,6 +297,11 @@ export function createApp(repository: ProofFlowRepository = new MemoryRepository
   app.post("/api/v1/agreements", async (c) => {
     const parsed = AgreementCreateInputSchema.safeParse(await c.req.json().catch(() => null));
     if (!parsed.success) return c.json({ error: { code: "VALIDATION_ERROR", message: "Agreement data is invalid.", fields: parsed.error.flatten().fieldErrors } }, 400);
+    if (enforceWalletAccess) {
+      const wallet = c.get("walletAddress");
+      if (!wallet) return c.json({ error: { code: "WALLET_AUTH_REQUIRED", message: "Connect and sign the wallet access message before creating an agreement." } }, 401);
+      if (wallet !== normalizeEvmAddress(parsed.data.payer)) return c.json({ error: { code: "FORBIDDEN", message: "The signed wallet must match the agreement payer." } }, 403);
+    }
     const now = new Date().toISOString();
     const policyHash = await sha256Hex(canonicalizePolicy(parsed.data.policy));
     const agreement = AgreementSchema.parse({ ...parsed.data, id: `agr_${crypto.randomUUID().replaceAll("-", "").slice(0, 16)}`, policyHash, state: JobState.AWAITING_FUNDING, createdAt: now, updatedAt: now });
@@ -217,12 +313,16 @@ export function createApp(repository: ProofFlowRepository = new MemoryRepository
   app.get("/api/v1/agreements/:id", (c) => {
     const agreement = repository.getAgreement(c.req.param("id"));
     if (!agreement) return c.json({ error: { code: "NOT_FOUND", message: "Agreement not found." } }, 404);
+    const accessError = agreementAccess(c, agreement);
+    if (accessError) return accessError;
     return c.json({ data: agreement });
   });
 
   app.post("/api/v1/agreements/:id/fund", (c) => {
     const agreement = repository.getAgreement(c.req.param("id"));
     if (!agreement) return c.json({ error: { code: "NOT_FOUND", message: "Agreement not found." } }, 404);
+    const accessError = agreementAccess(c, agreement);
+    if (accessError) return accessError;
     if (agreement.state !== JobState.AWAITING_FUNDING) return c.json({ error: { code: "INVALID_STATE", message: "Agreement is not awaiting funding." } }, 409);
     const updated = AgreementSchema.parse({ ...agreement, state: JobState.FUNDED, updatedAt: new Date().toISOString() });
     repository.saveAgreement(updated);
@@ -231,6 +331,10 @@ export function createApp(repository: ProofFlowRepository = new MemoryRepository
   });
 
   app.get("/api/v1/agreements/:id/policy-decision", (c) => {
+    const agreement = repository.getAgreement(c.req.param("id"));
+    if (!agreement) return c.json({ error: { code: "NOT_FOUND", message: "Agreement not found." } }, 404);
+    const accessError = agreementAccess(c, agreement);
+    if (accessError) return accessError;
     const id = c.req.param("id");
     const decisionEvent = repository.listAuditEvents(id).slice().reverse().find((event: AuditEvent) => event.eventType === "POLICY_EVALUATED");
     if (!decisionEvent) return c.json({ error: { code: "NOT_FOUND", message: "Policy decision not found." } }, 404);
@@ -243,6 +347,10 @@ export function createApp(repository: ProofFlowRepository = new MemoryRepository
   });
 
   app.get("/api/v1/agreements/:id/audit", (c) => {
+    const agreement = repository.getAgreement(c.req.param("id"));
+    if (!agreement) return c.json({ error: { code: "NOT_FOUND", message: "Agreement not found." } }, 404);
+    const accessError = agreementAccess(c, agreement);
+    if (accessError) return accessError;
     const events = repository.listAuditEvents(c.req.param("id"));
     for (let index = 0; index < events.length; index += 1) {
       const event = events[index];
@@ -257,6 +365,8 @@ export function createApp(repository: ProofFlowRepository = new MemoryRepository
     const id = c.req.param("id");
     const agreement = repository.getAgreement(id);
     if (!agreement) return c.json({ error: { code: "NOT_FOUND", message: "Agreement not found." } }, 404);
+    const accessError = agreementAccess(c, agreement);
+    if (accessError) return accessError;
     if (agreement.state !== JobState.FUNDED) return c.json({ error: { code: "INVALID_STATE", message: "Agreement must be funded before evidence submission." } }, 409);
     const parsed = EvidenceManifestContentSchema.safeParse(await c.req.json().catch(() => null));
     if (!parsed.success || parsed.data?.agreementId !== id) return c.json({ error: { code: "VALIDATION_ERROR", message: "Evidence manifest is invalid.", fields: parsed.success ? { agreementId: ["Manifest agreementId does not match the route."] } : parsed.error.flatten().fieldErrors } }, 400);
@@ -271,6 +381,10 @@ export function createApp(repository: ProofFlowRepository = new MemoryRepository
   });
 
   app.get("/api/v1/agreements/:id/evidence", (c) => {
+    const agreement = repository.getAgreement(c.req.param("id"));
+    if (!agreement) return c.json({ error: { code: "NOT_FOUND", message: "Agreement not found." } }, 404);
+    const accessError = agreementAccess(c, agreement);
+    if (accessError) return accessError;
     const manifest = repository.getManifest(c.req.param("id"));
     if (!manifest) return c.json({ error: { code: "NOT_FOUND", message: "Evidence manifest not found." } }, 404);
     return c.json({ data: manifest });
@@ -280,6 +394,8 @@ export function createApp(repository: ProofFlowRepository = new MemoryRepository
     const id = c.req.param("id");
     const agreement = repository.getAgreement(id);
     if (!agreement) return c.json({ error: { code: "NOT_FOUND", message: "Agreement not found." } }, 404);
+    const accessError = agreementAccess(c, agreement);
+    if (accessError) return accessError;
     if (agreement.state !== JobState.FUNDED) return c.json({ error: { code: "INVALID_STATE", message: "Agreement must be funded before evidence upload." } }, 409);
     const contentType = c.req.header("content-type") ?? "";
     if (!contentType.toLowerCase().startsWith("multipart/form-data")) return c.json({ error: { code: "UNSUPPORTED_MEDIA_TYPE", message: "Use multipart/form-data with a file field." } }, 415);
@@ -324,6 +440,10 @@ export function createApp(repository: ProofFlowRepository = new MemoryRepository
     if (!bytes) return c.json({ error: { code: "NOT_FOUND", message: "Evidence blob not found." } }, 404);
     const manifest = repository.listAgreements().map((agreement) => repository.getManifest(agreement.id)).find((item) => item?.items.some((entry) => entry.sha256.toLowerCase() === digest.toLowerCase().replace(/^0x/, "")));
     if (!manifest) return c.json({ error: { code: "NOT_FOUND", message: "Evidence blob not found." } }, 404);
+    const blobAgreement = repository.getAgreement(manifest.agreementId);
+    if (!blobAgreement) return c.json({ error: { code: "NOT_FOUND", message: "Evidence blob not found." } }, 404);
+    const accessError = agreementAccess(c, blobAgreement);
+    if (accessError) return accessError;
     const item = manifest.items.find((entry) => entry.sha256.toLowerCase() === digest.toLowerCase().replace(/^0x/, ""));
     const filename = (item?.name ?? "evidence").replace(/[^A-Za-z0-9._-]/g, "_").slice(0, 160) || "evidence";
     return new Response(Buffer.from(bytes), { headers: { "content-type": item?.mediaType ?? "application/octet-stream", "content-length": String(bytes.byteLength), "content-disposition": `attachment; filename="${filename}"`, "x-content-address": `0x${digest.replace(/^0x/, "")}` } });
@@ -334,6 +454,8 @@ export function createApp(repository: ProofFlowRepository = new MemoryRepository
     const agreement = repository.getAgreement(id);
     const manifest = repository.getManifest(id);
     if (!agreement) return c.json({ error: { code: "NOT_FOUND", message: "Agreement not found." } }, 404);
+    const accessError = agreementAccess(c, agreement);
+    if (accessError) return accessError;
     if (!manifest) return c.json({ error: { code: "INVALID_STATE", message: "Evidence must be submitted before evaluation." } }, 409);
     const reviewRun = repository.getLatestReviewRun(id);
     if (!reviewRun || reviewRun.status !== "SUCCEEDED" || reviewRun.evidenceManifestHash !== manifest.manifestHash) return c.json({ error: { code: "REVIEW_REQUIRED", message: "A successful review of the current evidence is required before policy evaluation." } }, 409);
@@ -352,6 +474,8 @@ export function createApp(repository: ProofFlowRepository = new MemoryRepository
     const agreement = repository.getAgreement(id);
     const manifest = repository.getManifest(id);
     if (!agreement) return c.json({ error: { code: "NOT_FOUND", message: "Agreement not found." } }, 404);
+    const accessError = agreementAccess(c, agreement);
+    if (accessError) return accessError;
     if (!manifest) return c.json({ error: { code: "INVALID_STATE", message: "Evidence must be submitted before review." } }, 409);
     if (agreement.state !== JobState.EVIDENCE_SUBMITTED && agreement.state !== JobState.UNDER_REVIEW) return c.json({ error: { code: "INVALID_STATE", message: "Agreement is not awaiting evidence review." } }, 409);
     const body = z.object({ evidenceText: z.string().max(40_000).default("") }).safeParse(await c.req.json().catch(() => ({})));
@@ -367,6 +491,10 @@ export function createApp(repository: ProofFlowRepository = new MemoryRepository
   });
 
   app.get("/api/v1/agreements/:id/reviews/latest", (c) => {
+    const agreement = repository.getAgreement(c.req.param("id"));
+    if (!agreement) return c.json({ error: { code: "NOT_FOUND", message: "Agreement not found." } }, 404);
+    const accessError = agreementAccess(c, agreement);
+    if (accessError) return accessError;
     const reviewRun = repository.getLatestReviewRun(c.req.param("id"));
     if (!reviewRun) return c.json({ error: { code: "NOT_FOUND", message: "Review run not found." } }, 404);
     return c.json({ data: reviewRun });
@@ -394,6 +522,10 @@ export function createApp(repository: ProofFlowRepository = new MemoryRepository
   });
 
   app.get("/api/v1/agreements/:id/settlement-intent", (c) => {
+    const agreement = repository.getAgreement(c.req.param("id"));
+    if (!agreement) return c.json({ error: { code: "NOT_FOUND", message: "Agreement not found." } }, 404);
+    const accessError = agreementAccess(c, agreement);
+    if (accessError) return accessError;
     const intent = repository.getSettlementIntentByAgreementId(c.req.param("id"));
     if (!intent) return c.json({ error: { code: "NOT_FOUND", message: "Settlement intent not found." } }, 404);
     return c.json({ data: intent });
@@ -413,6 +545,8 @@ export function createApp(repository: ProofFlowRepository = new MemoryRepository
     if (body.data.chainId !== expectedChainId) return c.json({ error: { code: "WRONG_NETWORK", message: `Expected X Layer chain ${expectedChainId}.` } }, 409);
     const agreement = repository.getAgreement(intent.agreementId);
     if (!agreement) return c.json({ error: { code: "NOT_FOUND", message: "Agreement not found." } }, 404);
+    const accessError = agreementAccess(c, agreement);
+    if (accessError) return accessError;
     if (body.data.walletAddress.toLowerCase() !== agreement.payer.toLowerCase()) return c.json({ error: { code: "UNAUTHORIZED_WALLET", message: "Only the agreement payer can authorize the native vault release." } }, 403);
     const now = new Date().toISOString();
     if (!vaultAddress || !/^0x[a-fA-F0-9]{40}$/.test(vaultAddress)) return c.json({ error: { code: "VAULT_NOT_CONFIGURED", message: "ProofFlow vault address is not configured." } }, 503);
@@ -437,6 +571,8 @@ export function createApp(repository: ProofFlowRepository = new MemoryRepository
     if (intent.transactionHash.toLowerCase() !== body.data.transactionHash.toLowerCase()) return c.json({ error: { code: "TRANSACTION_HASH_CONFLICT", message: "The reconciliation hash does not match the authorized settlement intent." } }, 409);
     const agreement = repository.getAgreement(intent.agreementId);
     if (!agreement) return c.json({ error: { code: "NOT_FOUND", message: "Agreement not found." } }, 404);
+    const accessError = agreementAccess(c, agreement);
+    if (accessError) return accessError;
     try {
       const client = new XLayerClient({ rpcUrl: xLayerRpcUrl, expectedChainId: xLayerChainId, timeoutMs: RPC_TIMEOUT_MS, onRpcMetric: (metric) => observability.recordRpc(metric) });
       if (!vaultAddress || !/^0x[a-fA-F0-9]{40}$/.test(vaultAddress)) return c.json({ error: { code: "VAULT_NOT_CONFIGURED", message: "ProofFlow vault address is not configured." } }, 503);
@@ -473,6 +609,8 @@ export function createApp(repository: ProofFlowRepository = new MemoryRepository
   app.get("/api/v1/settlement-intents/:id", (c) => {
     const intent = repository.getSettlementIntent(c.req.param("id"));
     if (!intent) return c.json({ error: { code: "NOT_FOUND", message: "Settlement intent not found." } }, 404);
+    const agreement = intent ? repository.getAgreement(intent.agreementId) : null;
+    if (agreement) { const accessError = agreementAccess(c, agreement); if (accessError) return accessError; }
     return c.json({ data: intent });
   });
 

@@ -2,6 +2,11 @@ import { z } from "zod";
 
 export const XLAYER_TESTNET_CHAIN_ID = 1952 as const;
 export const XLAYER_MAINNET_CHAIN_ID = 196 as const;
+export type WorkspaceRole = "client" | "contractor";
+
+export function normalizeEvmAddress(value: string): string {
+  return value.toLowerCase();
+}
 export const MIN_PASS_CONFIDENCE_BPS = 9_000 as const;
 
 export enum JobState {
@@ -86,6 +91,12 @@ export const AgreementCreateRequestSchema = AgreementCreateInputSchema;
 export type AgreementCreateInput = z.infer<typeof AgreementCreateInputSchema>;
 
 export type Agreement = z.infer<typeof AgreementSchema>;
+
+export function agreementMatchesWorkspace(agreement: Agreement, role: WorkspaceRole, walletAddress: string): boolean {
+  const normalizedWallet = normalizeEvmAddress(walletAddress);
+  const identity = role === "client" ? agreement.payer : agreement.recipient;
+  return normalizeEvmAddress(identity) === normalizedWallet;
+}
 
 export function canonicalizePolicy(policy: Policy): string {
   const parsed = PolicySchema.parse(policy);
