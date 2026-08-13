@@ -895,8 +895,9 @@ body { background: #030405; }
 }
 
 @media (min-width: 768px) and (max-width: 1023px) {
+  .app-shell { width: 100%; }
   .sidebar { width: 216px; flex-basis: 216px; }
-  .main-content { width: calc(100vw - 216px); max-width: none; padding-left: 24px; padding-right: 24px; }
+  .main-content { box-sizing: border-box; width: calc(100% - 216px); max-width: none; padding-left: 24px; padding-right: 24px; }
   .topbar-actions { gap: 6px; }
   .topbar-actions .protocol-nav { display: none; }
   .global-search { min-width: 120px; }
@@ -905,6 +906,7 @@ body { background: #030405; }
   .protocol-feature-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .protocol-workflow { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .footer-links { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .app-footer { margin-left: 0; margin-right: 0; }
 }
 
 @media (max-width: 767px) {
