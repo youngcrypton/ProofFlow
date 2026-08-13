@@ -2,7 +2,7 @@ import { StrictMode, useCallback, useEffect, useMemo, useRef, useState } from "r
 import type { FormEvent, ReactNode } from "react";
 import { createRoot } from "react-dom/client";
 import { Analytics } from "@vercel/analytics/react";
-import { AppKitProvider, useAppKitAccount, useAppKitProvider } from "@reown/appkit/react";
+import { AppKitProvider, useAppKit, useAppKitAccount, useAppKitProvider } from "@reown/appkit/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { WagmiProvider } from "wagmi";
 import { walletAppKit, walletConfigurationMissing, asEip1193Provider, switchToXLayer, XLAYER_TESTNET_CHAIN_ID, wagmiConfig } from "./wallet";
@@ -90,6 +90,7 @@ function App() {
   const [detailLoading, setDetailLoading] = useState(false);
   const [walletAddress, setWalletAddress] = useState<string | null>(null);
   const [walletChainId, setWalletChainId] = useState<number | null>(null);
+  const { open: openWalletModal } = useAppKit();
   const { walletProvider: appKitProvider } = useAppKitProvider<Eip1193Provider>("eip155");
   const { address: appKitAddress, isConnected: appKitConnected } = useAppKitAccount({ namespace: "eip155" });
   const [walletBusy, setWalletBusy] = useState(false);
@@ -210,7 +211,7 @@ function App() {
     setWalletBusy(true);
     setWalletStatus("connecting");
     try {
-      await walletAppKit.open({ view: "Connect", namespace: "eip155" });
+      await openWalletModal({ view: "Connect", namespace: "eip155" });
       setNotice({ kind: "info", text: "Choose a wallet to connect to ProofFlow." });
     } catch (error) {
       if (isUserRejected(error)) {
