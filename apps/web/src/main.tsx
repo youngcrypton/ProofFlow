@@ -6,6 +6,7 @@ import { AppKitProvider, useAppKit, useAppKitAccount, useAppKitProvider } from "
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { WagmiProvider } from "wagmi";
 import { walletAppKit, walletConfigurationMissing, asEip1193Provider, switchToXLayer, XLAYER_TESTNET_CHAIN_ID, wagmiConfig } from "./wallet";
+import { readWalletChainId, walletChainStatus } from "./wallet-state";
 import AnimatedContent from "./components/motion/AnimatedContent";
 import BlurText from "./components/motion/BlurText";
 import CountUp from "./components/motion/CountUp";
@@ -88,11 +89,6 @@ function getViewFromHash(): View {
 function isUserRejected(error: unknown): boolean {
   const code = typeof error === "object" && error !== null && "code" in error ? (error as { code?: number }).code : undefined;
   return code === 4001 || code === 300;
-}
-
-function readProviderChainId(value: unknown): number | null {
-  if (typeof value === "string") return value.startsWith("0x") ? Number.parseInt(value, 16) : Number(value);
-  return typeof value === "number" ? value : null;
 }
 
 function App() {
@@ -214,10 +210,10 @@ function App() {
         walletSessionToken = session.token;
         setWalletSessionReady(true);
         const chainValue = await provider.request({ method: "eth_chainId" });
-        const chainId = readProviderChainId(chainValue);
+        const chainId = readWalletChainId(chainValue);
         if (chainId === null) throw new Error("The wallet did not return a valid chain ID.");
         setWalletChainId(chainId);
-        setWalletStatus(chainId === EXPECTED_WALLET_CHAIN_ID ? "connected" : "wrong_network");
+        setWalletStatus(walletChainStatus(chainId, EXPECTED_WALLET_CHAIN_ID));
         setWalletError(null);
         void loadAgreements();
       } catch (error) {
@@ -296,7 +292,7 @@ function App() {
     try {
       await switchToXLayer(provider);
       const chainValue = await provider.request({ method: "eth_chainId" });
-      const chainId = readProviderChainId(chainValue);
+      const chainId = readWalletChainId(chainValue);
       if (chainId === null) throw new Error("The wallet did not return a valid chain ID.");
       setWalletChainId(chainId);
       if (chainId !== EXPECTED_WALLET_CHAIN_ID) throw new Error(`Wallet is on chain ${chainId}. Switch to X Layer testnet before continuing.`);
@@ -316,12 +312,12 @@ function App() {
     try {
       const expectedChainId = EXPECTED_WALLET_CHAIN_ID;
       const currentChainHex = await provider.request({ method: "eth_chainId" });
-      const currentChainId = readProviderChainId(currentChainHex);
+      const currentChainId = readWalletChainId(currentChainHex);
       if (currentChainId === null) throw new Error("The wallet did not return a valid chain ID.");
       setWalletChainId(currentChainId);
       if (currentChainId !== expectedChainId) { setSettlementStage("preparing"); await switchToXLayer(provider); }
       const confirmedChainHex = await provider.request({ method: "eth_chainId" });
-      const confirmedChainId = readProviderChainId(confirmedChainHex);
+      const confirmedChainId = readWalletChainId(confirmedChainHex);
       if (confirmedChainId === null) throw new Error("The wallet did not return a valid chain ID.");
       setWalletChainId(confirmedChainId);
       if (confirmedChainId !== expectedChainId) throw new Error(`Wallet is on chain ${confirmedChainId}. Switch to X Layer testnet before continuing.`);
