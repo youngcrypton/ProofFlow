@@ -1,3 +1,25 @@
+FROM oven/bun:1.2.15-debian AS build
+
+RUN apt-get update \
+    && DEBIAN_FRONTEND=noninteractive apt-get install --yes --no-install-recommends \
+      nodejs \
+      npm \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+COPY package.json package-lock.json ./
+COPY apps/api/package.json apps/api/package.json
+COPY apps/web/package.json apps/web/package.json
+COPY packages/domain/package.json packages/domain/package.json
+RUN npm ci --include=dev
+
+COPY tsconfig.json tsconfig.base.json ./
+COPY apps/api apps/api
+COPY packages/domain packages/domain
+RUN npm run build:api
+RUN npm prune --omit=dev
+
 FROM oven/bun:1.2.15-debian
 
 ENV NODE_ENV=production \
@@ -19,16 +41,7 @@ RUN apt-get update \
 
 WORKDIR /app
 
-COPY package.json package-lock.json ./
-COPY apps/api/package.json apps/api/package.json
-COPY apps/web/package.json apps/web/package.json
-COPY packages/domain/package.json packages/domain/package.json
-RUN npm ci
-
-COPY tsconfig.json tsconfig.base.json ./
-COPY apps/api apps/api
-COPY packages/domain packages/domain
-RUN npm run build:api
+COPY --from=build /app /app
 
 COPY docker/api-entrypoint.sh /usr/local/bin/proofflow-api-entrypoint
 RUN chmod 0755 /usr/local/bin/proofflow-api-entrypoint \

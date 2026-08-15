@@ -8,5 +8,6 @@
     "types": ["bun"]
   },
   "references": [{ "path": "../../packages/domain" }],
-  "include": ["src"]
+  "include": ["src"],
+  "exclude": ["src/**/*.test.ts", "src/**/*.spec.ts"]
 }
