@@ -26,7 +26,7 @@ type SettlementIntent = { id: string; agreementId: string; amountBaseUnits: stri
 type SettlementAuthorization = { walletAddress: string; transactionHash: string; chainId: number };
 type SettlementReconciliation = { status: "PENDING" | "CONFIRMED" | "FAILED"; intent: SettlementIntent; receipt: { transactionHash: string; blockNumber: string; status: "0x1" | "0x0" } | null };
 type Eip1193Provider = { request: (args: { method: string; params?: unknown[] }) => Promise<unknown>; on?: (event: string, handler: (...args: unknown[]) => void) => void; removeListener?: (event: string, handler: (...args: unknown[]) => void) => void; isOkxWallet?: boolean; providers?: Eip1193Provider[] };
-type WalletStatus = "idle" | "connecting" | "connected" | "wrong_network" | "rejected" | "unavailable" | "error";
+type WalletStatus = "idle" | "connecting" | "connected" | "wrong_network" | "switching" | "rejected" | "unavailable" | "error";
 type ChainPreview = { agreementId: string; network: { chainId: number; rpcUrl: string }; vault: VaultSnapshot; transactions: { fund: TransactionPreview; commitEvidence: TransactionPreview | null; release: TransactionPreview } };
 type AgreementDetail = { agreement: Agreement; manifest: EvidenceManifest | null; reviewRun: ReviewRun | null; decision: PolicyDecision | null; audit: AuditEvent[]; chain: ChainPreview | null; chainError: string | null };
 type AgreementDraft = { title: string; description: string; payer: string; recipient: string; tokenAddress: string; amountBaseUnits: string; deadline: string; evidenceTypes: EvidenceType[]; minimumConfidenceBps: number; releaseAmountBaseUnits: string; policyVersion: string };
@@ -40,6 +40,7 @@ function workspaceCopy(role: WorkspaceRole) {
 }
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL ?? "/api-proxy";
+const EXPECTED_WALLET_CHAIN_ID = XLAYER_TESTNET_CHAIN_ID;
 let walletSessionToken: string | null = null;
 
 async function pollSettlement(intentId: string, transactionHash: string): Promise<SettlementReconciliation | null> {
@@ -87,6 +88,11 @@ function getViewFromHash(): View {
 function isUserRejected(error: unknown): boolean {
   const code = typeof error === "object" && error !== null && "code" in error ? (error as { code?: number }).code : undefined;
   return code === 4001 || code === 300;
+}
+
+function readProviderChainId(value: unknown): number | null {
+  if (typeof value === "string") return value.startsWith("0x") ? Number.parseInt(value, 16) : Number(value);
+  return typeof value === "number" ? value : null;
 }
 
 function App() {
@@ -208,9 +214,10 @@ function App() {
         walletSessionToken = session.token;
         setWalletSessionReady(true);
         const chainValue = await provider.request({ method: "eth_chainId" });
-        const chainId = typeof chainValue === "string" ? Number.parseInt(chainValue, 16) : Number(chainValue);
+        const chainId = readProviderChainId(chainValue);
+        if (chainId === null) throw new Error("The wallet did not return a valid chain ID.");
         setWalletChainId(chainId);
-        setWalletStatus(chainId === XLAYER_TESTNET_CHAIN_ID ? "connected" : "wrong_network");
+        setWalletStatus(chainId === EXPECTED_WALLET_CHAIN_ID ? "connected" : "wrong_network");
         setWalletError(null);
         void loadAgreements();
       } catch (error) {
@@ -285,7 +292,17 @@ function App() {
     const provider = asEip1193Provider(appKitProvider);
     if (!provider) { setWalletStatus("unavailable"); setWalletError("Wallet provider unavailable. Reconnect your wallet before switching networks."); return; }
     setWalletBusy(true);
-    try { await switchToXLayer(provider); setWalletChainId(XLAYER_TESTNET_CHAIN_ID); setWalletStatus("connected"); setNotice({ kind: "success", text: "Wallet switched to X Layer testnet." }); }
+    setWalletStatus("switching");
+    try {
+      await switchToXLayer(provider);
+      const chainValue = await provider.request({ method: "eth_chainId" });
+      const chainId = readProviderChainId(chainValue);
+      if (chainId === null) throw new Error("The wallet did not return a valid chain ID.");
+      setWalletChainId(chainId);
+      if (chainId !== EXPECTED_WALLET_CHAIN_ID) throw new Error(`Wallet is on chain ${chainId}. Switch to X Layer testnet before continuing.`);
+      setWalletStatus("connected");
+      setNotice({ kind: "success", text: "Wallet switched to X Layer testnet." });
+    }
     catch (error) { setWalletStatus(isUserRejected(error) ? "wrong_network" : "error"); setWalletError(isUserRejected(error) ? "Network switch was cancelled." : error instanceof Error ? error.message : "Unable to switch network. Please try again."); }
     finally { setWalletBusy(false); }
   }
@@ -297,13 +314,15 @@ function App() {
     setWalletBusy(true); setWalletError(null); setSettlementStage("preparing"); setSettlementHash(null);
     let submittedHash: string | null = null;
     try {
-      const expectedChainId = Number(import.meta.env.VITE_XLAYER_CHAIN_ID ?? XLAYER_TESTNET_CHAIN_ID);
-      const currentChainHex = await provider.request({ method: "eth_chainId" }) as string;
-      const currentChainId = Number.parseInt(currentChainHex, 16);
+      const expectedChainId = EXPECTED_WALLET_CHAIN_ID;
+      const currentChainHex = await provider.request({ method: "eth_chainId" });
+      const currentChainId = readProviderChainId(currentChainHex);
+      if (currentChainId === null) throw new Error("The wallet did not return a valid chain ID.");
       setWalletChainId(currentChainId);
       if (currentChainId !== expectedChainId) { setSettlementStage("preparing"); await switchToXLayer(provider); }
-      const confirmedChainHex = await provider.request({ method: "eth_chainId" }) as string;
-      const confirmedChainId = Number.parseInt(confirmedChainHex, 16);
+      const confirmedChainHex = await provider.request({ method: "eth_chainId" });
+      const confirmedChainId = readProviderChainId(confirmedChainHex);
+      if (confirmedChainId === null) throw new Error("The wallet did not return a valid chain ID.");
       setWalletChainId(confirmedChainId);
       if (confirmedChainId !== expectedChainId) throw new Error(`Wallet is on chain ${confirmedChainId}. Switch to X Layer testnet before continuing.`);
       const intentResponse = await api<SettlementIntent>(`/api/v1/agreements/${agreementId}/settlement-intent`);

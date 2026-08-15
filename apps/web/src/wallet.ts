@@ -1,6 +1,9 @@
 import { createAppKit } from "@reown/appkit/react";
 import { WagmiAdapter } from "@reown/appkit-adapter-wagmi";
 import type { AppKitNetwork } from "@reown/appkit/networks";
+import { XLAYER_TESTNET, XLAYER_TESTNET_CHAIN_ID, XLAYER_TESTNET_CHAIN_HEX } from "@proofflow/domain";
+
+export { XLAYER_TESTNET, XLAYER_TESTNET_CHAIN_ID, XLAYER_TESTNET_CHAIN_HEX };
 
 type Eip1193Provider = {
   request: (args: { method: string; params?: unknown[] }) => Promise<unknown>;
@@ -8,17 +11,14 @@ type Eip1193Provider = {
   removeListener?: (event: string, handler: (...args: unknown[]) => void) => void;
 };
 
-export const XLAYER_TESTNET_CHAIN_ID = 1952;
-const XLAYER_TESTNET_CHAIN_HEX = "0x7a0";
-const XLAYER_TESTNET_RPC = "https://testrpc.xlayer.tech/terigon";
 const REOWN_PROJECT_ID = import.meta.env.VITE_REOWN_PROJECT_ID ?? "b56e18d47c72ab683b10814fe9495694";
 
 const xLayerTestnet: AppKitNetwork = {
-  id: XLAYER_TESTNET_CHAIN_ID,
-  name: "X Layer Testnet",
-  nativeCurrency: { name: "OKB", symbol: "OKB", decimals: 18 },
-  rpcUrls: { default: { http: [XLAYER_TESTNET_RPC] }, public: { http: [XLAYER_TESTNET_RPC] } },
-  blockExplorers: { default: { name: "OKX Explorer", url: "https://www.okx.com/web3/explorer/xlayer-test" } },
+  id: XLAYER_TESTNET.id,
+  name: XLAYER_TESTNET.name,
+  nativeCurrency: XLAYER_TESTNET.nativeCurrency,
+  rpcUrls: { default: { http: [XLAYER_TESTNET.rpcUrl] }, public: { http: [XLAYER_TESTNET.rpcUrl] } },
+  blockExplorers: { default: { name: "OKX Explorer", url: XLAYER_TESTNET.explorerUrl } },
   chainNamespace: "eip155",
   caipNetworkId: `eip155:${XLAYER_TESTNET_CHAIN_ID}`
 };
@@ -40,7 +40,7 @@ export const walletAppKit = createAppKit({
   metadata: {
     name: "ProofFlow",
     description: "Verifiable work and programmable trust on X Layer.",
-    url: window.location.origin,
+    url: typeof window === "undefined" ? "https://proofflow.app" : window.location.origin,
     icons: ["https://static.okx.com/cdn/assets/imgs/247/58E63FEA47A2B7D7.png"]
   },
   themeMode: "dark",
@@ -68,7 +68,7 @@ export async function switchToXLayer(provider: Eip1193Provider): Promise<void> {
       chainId: XLAYER_TESTNET_CHAIN_HEX,
       chainName: "X Layer testnet",
       nativeCurrency: { name: "OKB", symbol: "OKB", decimals: 18 },
-      rpcUrls: [XLAYER_TESTNET_RPC],
+      rpcUrls: [XLAYER_TESTNET.rpcUrl],
       blockExplorerUrls: ["https://www.okx.com/web3/explorer/xlayer-test"]
     }] });
   }

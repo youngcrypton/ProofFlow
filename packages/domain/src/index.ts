@@ -1,7 +1,19 @@
 import { z } from "zod";
 
 export const XLAYER_TESTNET_CHAIN_ID = 1952 as const;
+export const XLAYER_TESTNET_CHAIN_HEX = "0x7a0" as const;
+export const XLAYER_TESTNET_RPC_URL = "https://testrpc.xlayer.tech/terigon" as const;
+export const XLAYER_TESTNET_EXPLORER_URL = "https://www.okx.com/web3/explorer/xlayer-test" as const;
 export const XLAYER_MAINNET_CHAIN_ID = 196 as const;
+
+export const XLAYER_TESTNET = {
+  id: XLAYER_TESTNET_CHAIN_ID,
+  hexId: XLAYER_TESTNET_CHAIN_HEX,
+  name: "X Layer Testnet",
+  nativeCurrency: { name: "OKB", symbol: "OKB", decimals: 18 },
+  rpcUrl: XLAYER_TESTNET_RPC_URL,
+  explorerUrl: XLAYER_TESTNET_EXPLORER_URL
+} as const;
 export type WorkspaceRole = "client" | "contractor";
 
 export function normalizeEvmAddress(value: string): string {
