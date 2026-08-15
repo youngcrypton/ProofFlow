@@ -7,6 +7,8 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { WagmiProvider } from "wagmi";
 import { walletAppKit, walletConfigurationMissing, asEip1193Provider, switchToXLayer, XLAYER_TESTNET_CHAIN_ID, wagmiConfig } from "./wallet";
 import { readWalletChainId, walletChainStatus } from "./wallet-state";
+import { WalletSessionController } from "./wallet-session";
+import { parseApiResponse } from "./api-response";
 import AnimatedContent from "./components/motion/AnimatedContent";
 import BlurText from "./components/motion/BlurText";
 import CountUp from "./components/motion/CountUp";
@@ -42,7 +44,7 @@ function workspaceCopy(role: WorkspaceRole) {
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL ?? "/api-proxy";
 const EXPECTED_WALLET_CHAIN_ID = XLAYER_TESTNET_CHAIN_ID;
-let walletSessionToken: string | null = null;
+const walletSession = new WalletSessionController();
 
 async function pollSettlement(intentId: string, transactionHash: string): Promise<SettlementReconciliation | null> {
   const deadline = Date.now() + 90_000;
@@ -63,10 +65,10 @@ async function api<T>(path: string, init?: RequestInit): Promise<T> {
   const headers = new Headers(init?.headers);
   headers.set("Accept", "application/json");
   if (!isMultipart && !headers.has("content-type")) headers.set("content-type", "application/json");
-  if (walletSessionToken) headers.set("X-ProofFlow-Wallet-Session", walletSessionToken);
+  walletSession.applyHeader(headers);
   const requestPath = API_BASE === "/api-proxy" ? `${API_BASE}${path.replace(/^\/api/, "")}` : `${API_BASE}${path}`;
   const response = await fetch(requestPath, { ...init, headers });
-  const body = await response.json() as ApiEnvelope<T>;
+  const body = await parseApiResponse<ApiEnvelope<T>>(response);
   if (!response.ok || body.error) {
     const error = new Error(body.error?.message ?? `Request failed (${response.status})`) as Error & { fields?: Record<string, string[]> };
     if (body.error && "fields" in body.error) error.fields = (body.error as typeof body.error & { fields?: Record<string, string[]> }).fields;
@@ -185,11 +187,19 @@ function App() {
   useEffect(() => {
     const address = appKitConnected ? appKitAddress ?? null : null;
     setWalletAddress(address);
-    setWalletSessionReady(false);
-    walletSessionToken = null;
     if (!address) {
+      walletSession.clear();
+      setWalletSessionReady(false);
       setWalletChainId(null);
       setWalletStatus("idle");
+      return;
+    }
+    if (walletSession.address && walletSession.address !== address.toLowerCase()) {
+      walletSession.clear();
+      setWalletSessionReady(false);
+    }
+    if (walletSession.hasValidSession(address)) {
+      setWalletSessionReady(true);
       return;
     }
     const provider = asEip1193Provider(appKitProvider);
@@ -202,12 +212,13 @@ function App() {
     void (async () => {
       try {
         setWalletStatus("connecting");
-        const challenge = await api<{ nonce: string; message: string }>(`/api/v1/wallet/challenge?address=${encodeURIComponent(address)}`, { method: "POST" });
-        setNotice({ kind: "info", text: "Sign the ProofFlow access message. It does not authorize a transaction." });
-        const signature = await provider.request({ method: "personal_sign", params: [challenge.message, address] }) as string;
-        const session = await api<{ token: string }>("/api/v1/wallet/session", { method: "POST", body: JSON.stringify({ address, nonce: challenge.nonce, signature }) });
+        await walletSession.authenticate(address, async () => {
+          const challenge = await api<{ nonce: string; message: string }>(`/api/v1/wallet/challenge?address=${encodeURIComponent(address)}`, { method: "POST" });
+          setNotice({ kind: "info", text: "Sign the ProofFlow access message. It does not authorize a transaction." });
+          const signature = await provider.request({ method: "personal_sign", params: [challenge.message, address] }) as string;
+          return api<{ token: string; address: string; expiresAt: number }>("/api/v1/wallet/session", { method: "POST", body: JSON.stringify({ address, nonce: challenge.nonce, signature }) });
+        });
         if (cancelled) return;
-        walletSessionToken = session.token;
         setWalletSessionReady(true);
         const chainValue = await provider.request({ method: "eth_chainId" });
         const chainId = readWalletChainId(chainValue);
@@ -215,15 +226,16 @@ function App() {
         setWalletChainId(chainId);
         setWalletStatus(walletChainStatus(chainId, EXPECTED_WALLET_CHAIN_ID));
         setWalletError(null);
-        void loadAgreements();
       } catch (error) {
         if (cancelled) return;
+        walletSession.invalidate(address);
+        setWalletSessionReady(false);
         setWalletStatus(isUserRejected(error) ? "rejected" : "error");
         setWalletError(isUserRejected(error) ? "Access signature cancelled. Connect again to load this workspace." : error instanceof Error ? error.message : "Unable to verify wallet access.");
       }
     })();
     return () => { cancelled = true; };
-  }, [appKitAddress, appKitConnected, appKitProvider, loadAgreements]);
+  }, [appKitAddress, appKitConnected, appKitProvider]);
   useEffect(() => { if (selectedId && walletSessionReady) void loadDetail(selectedId); }, [selectedId, loadDetail, walletSessionReady]);
   useEffect(() => {
     const onHashChange = () => setActiveView(getViewFromHash());

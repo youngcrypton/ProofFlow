@@ -1,6 +1,6 @@
 [build]
-builder = "NIXPACKS"
-buildCommand = "npm run build:api"
+builder = "DOCKERFILE"
+dockerfilePath = "Dockerfile.api"
 
 [deploy]
 startCommand = "bun run apps/api/src/server.ts"

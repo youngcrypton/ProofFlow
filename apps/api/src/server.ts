@@ -1,6 +1,10 @@
 import { SqliteRepository } from "./sqlite-repository";
 import { createApp } from "./index";
 import { logStructured } from "./observability";
+import { validateProductionEnvironment, validateProductionRuntime } from "./production-config";
+
+validateProductionEnvironment();
+await validateProductionRuntime();
 
 const port = Number(process.env.PORT ?? 8787);
 const hostname = process.env.HOST ?? "0.0.0.0";
