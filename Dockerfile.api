@@ -82,6 +82,7 @@ RUN apt-get update \
       clamav \
       nodejs \
       npm \
+      util-linux \
     && mkdir -p /var/lib/clamav \
     && chown -R clamav:clamav /var/lib/clamav \
     && chmod 0755 /var/lib/clamav \
@@ -105,4 +106,4 @@ EXPOSE 8787
 
 USER root
 
-CMD ["bun", "run", "apps/api/src/server.ts"]
+CMD ["sh", "-c", "set -eu; mkdir -p /data/evidence/quarantine /data/evidence/clean; chown -R bun:bun /data; exec setpriv --reuid=bun --regid=bun --init-groups -- bun run apps/api/src/server.ts"]
