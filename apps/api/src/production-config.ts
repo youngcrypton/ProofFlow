@@ -1,5 +1,5 @@
 import { constants } from "node:fs";
-import { access, mkdir, rm, writeFile } from "node:fs/promises";
+import { access, mkdir, readdir, rm, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 
 const REQUIRED_PRODUCTION_VARIABLES = [
@@ -26,6 +26,7 @@ type Environment = Partial<Record<ProductionVariable | "NODE_ENV", string | unde
 type RuntimeDependencies = {
   access: typeof access;
   mkdir: typeof mkdir;
+  readdir: (path: string) => Promise<string[]>;
   writeFile: typeof writeFile;
   rm: typeof rm;
   runScanner: (executable: string, path: string) => Promise<{ exitCode: number; output: string }>;
@@ -60,6 +61,7 @@ export async function validateProductionRuntime(environment: Environment = proce
   const runtime: RuntimeDependencies = {
     access,
     mkdir,
+    readdir: (path) => readdir(path),
     writeFile,
     rm,
     runScanner: runClamScan,
@@ -73,6 +75,17 @@ export async function validateProductionRuntime(environment: Environment = proce
     await runtime.access(scannerPath, constants.X_OK);
   } catch {
     throw new Error(`Production readiness failed: clamscan is unavailable or not executable at ${scannerPath}`);
+  }
+
+  let definitionFiles: string[];
+  try {
+    definitionFiles = await runtime.readdir("/var/lib/clamav");
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(`Production readiness failed: ClamAV database directory is unavailable at /var/lib/clamav: ${message}`);
+  }
+  if (!definitionFiles.some((name) => /\.(?:cvd|cld|cud)$/i.test(name))) {
+    throw new Error("Production readiness failed: no supported ClamAV database files found in /var/lib/clamav");
   }
 
   await verifyWritableDirectory("persistent storage", "/data", runtime);

@@ -49,12 +49,18 @@ describe("production environment validation", () => {
     expect(() => validateProductionEnvironment({ ...validProductionEnvironment, PROOFFLOW_DB_PATH: "./data/proofflow.sqlite" })).toThrow(/must be \/data\/proofflow.sqlite/);
     expect(() => validateProductionEnvironment({ ...validProductionEnvironment, PROOFFLOW_EVIDENCE_DIR: "./data/evidence" })).toThrow(/must be \/data\/evidence/);
   });
+
+  it("requires the production database and evidence storage configuration", () => {
+    expect(() => validateProductionEnvironment({ ...validProductionEnvironment, PROOFFLOW_DB_PATH: "" })).toThrow(/PROOFFLOW_DB_PATH is required/);
+    expect(() => validateProductionEnvironment({ ...validProductionEnvironment, PROOFFLOW_EVIDENCE_DIR: "" })).toThrow(/PROOFFLOW_EVIDENCE_DIR is required/);
+  });
 });
 
 describe("production runtime validation", () => {
   const successfulRuntime = {
     access: async () => undefined,
     mkdir: async () => undefined,
+    readdir: async () => ["main.cvd", "daily.cld", "bytecode.cvd"],
     writeFile: async () => undefined,
     rm: async () => undefined,
     runScanner: async () => ({ exitCode: 0, output: "probe: OK" })
@@ -81,7 +87,14 @@ describe("production runtime validation", () => {
     })).rejects.toThrow(/clamscan is unavailable/);
   });
 
-  it("fails when ClamAV cannot scan with loaded definitions", async () => {
+  it("fails when ClamAV database definitions are missing", async () => {
+    await expect(validateProductionRuntime(validProductionEnvironment, {
+      ...successfulRuntime,
+      readdir: async () => []
+    })).rejects.toThrow(/no supported ClamAV database files/);
+  });
+
+  it("fails when the ClamAV readiness scan fails", async () => {
     await expect(validateProductionRuntime(validProductionEnvironment, {
       ...successfulRuntime,
       runScanner: async () => ({ exitCode: 2, output: "No supported database files found" })
@@ -93,5 +106,14 @@ describe("production runtime validation", () => {
       ...successfulRuntime,
       writeFile: async () => { throw new Error("EACCES"); }
     })).rejects.toThrow(/persistent storage is not writable/);
+  });
+
+  it("fails when the evidence directory is not writable", async () => {
+    await expect(validateProductionRuntime(validProductionEnvironment, {
+      ...successfulRuntime,
+      writeFile: async (path) => {
+        if (String(path).replaceAll("\\", "/").startsWith("/data/evidence/")) throw new Error("EACCES");
+      }
+    })).rejects.toThrow(/evidence directory is not writable/);
   });
 });

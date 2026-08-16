@@ -37,6 +37,9 @@ RUN apt-get update \
       gosu \
       nodejs \
       npm \
+    && mkdir -p /var/lib/clamav \
+    && chown -R clamav:clamav /var/lib/clamav \
+    && chmod 0755 /var/lib/clamav \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
@@ -45,7 +48,7 @@ COPY --from=build /app /app
 
 COPY docker/api-entrypoint.sh /usr/local/bin/proofflow-api-entrypoint
 RUN chmod 0755 /usr/local/bin/proofflow-api-entrypoint \
-    && mkdir -p /data/evidence /var/lib/clamav \
+    && mkdir -p /data/evidence \
     && chown -R bun:bun /app /data
 
 EXPOSE 8787
