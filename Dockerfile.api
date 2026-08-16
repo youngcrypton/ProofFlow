@@ -92,6 +92,7 @@ WORKDIR /app
 
 COPY --from=build /app /app
 COPY --from=clamav-definitions --chown=clamav:clamav /var/lib/clamav/ /var/lib/clamav/
+COPY docker/api-entrypoint.sh /usr/local/bin/proofflow-api-entrypoint
 
 RUN set -eu; \
     id bun >/dev/null; \
@@ -100,10 +101,13 @@ RUN set -eu; \
     clamscan --no-summary --stdout /tmp/proofflow-clamav-readiness.txt; \
     rm -f /tmp/proofflow-clamav-readiness.txt; \
     mkdir -p /data/evidence; \
-    chown -R bun:bun /app /data
+    chown -R bun:bun /app /data; \
+    chmod 0755 /usr/local/bin/proofflow-api-entrypoint
 
 EXPOSE 8787
 
 USER root
 
-CMD ["sh", "-c", "set -eu; mkdir -p /data/evidence/quarantine /data/evidence/clean; chown -R bun:bun /data; exec setpriv --reuid=bun --regid=bun --init-groups -- bun run apps/api/src/server.ts"]
+ENTRYPOINT ["/usr/local/bin/proofflow-api-entrypoint"]
+
+CMD ["bun", "run", "apps/api/src/server.ts"]
