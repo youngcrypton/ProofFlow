@@ -26,8 +26,12 @@ ARG CLAMAV_DEFINITIONS_REFRESH=initial
 
 RUN apt-get update \
     && DEBIAN_FRONTEND=noninteractive apt-get install --yes --no-install-recommends \
+      ca-certificates \
       clamav \
       clamav-freshclam \
+      nodejs \
+      npm \
+    && update-ca-certificates \
     && rm -rf /var/lib/apt/lists/* \
     && mkdir -p /var/lib/clamav \
     && chown -R clamav:clamav /var/lib/clamav \
