@@ -20,6 +20,49 @@ COPY packages/domain packages/domain
 RUN npm run build:api
 RUN npm prune --omit=dev
 
+FROM oven/bun:1.2.15-debian AS clamav-definitions
+
+ARG CLAMAV_DEFINITIONS_REFRESH=initial
+
+RUN apt-get update \
+    && DEBIAN_FRONTEND=noninteractive apt-get install --yes --no-install-recommends \
+      clamav \
+      clamav-freshclam \
+    && rm -rf /var/lib/apt/lists/* \
+    && mkdir -p /var/lib/clamav \
+    && chown -R clamav:clamav /var/lib/clamav \
+    && chmod 0755 /var/lib/clamav
+
+RUN set -eu; \
+    echo "[ProofFlow build] ClamAV definitions refresh key: $CLAMAV_DEFINITIONS_REFRESH"; \
+    freshclam_config=/etc/clamav/freshclam.conf; \
+    if [ ! -f "$freshclam_config" ]; then echo "ClamAV build failed: missing $freshclam_config." >&2; exit 1; fi; \
+    if grep -Eq '^[[:space:]]*Example([[:space:]]|$)' "$freshclam_config"; then echo "ClamAV build failed: freshclam configuration is marked as an example." >&2; exit 1; fi; \
+    if grep -Eq '^[[:space:]]*DatabaseDirectory[[:space:]]+' "$freshclam_config"; then \
+      configured_database_directory="$(awk '$1 == "DatabaseDirectory" { print $2; exit }' "$freshclam_config")"; \
+      if [ "$configured_database_directory" != "/var/lib/clamav" ]; then echo "ClamAV build failed: DatabaseDirectory must be /var/lib/clamav." >&2; exit 1; fi; \
+    else \
+      printf '\nDatabaseDirectory /var/lib/clamav\n' >> "$freshclam_config"; \
+    fi; \
+    freshclam_status=1; \
+    attempt=1; \
+    while [ "$attempt" -le 3 ]; do \
+      echo "[ProofFlow build] freshclam attempt $attempt of 3..."; \
+      set +e; \
+      freshclam --config-file="$freshclam_config" --stdout; \
+      freshclam_status=$?; \
+      set -e; \
+      echo "[ProofFlow build] freshclam exited with status $freshclam_status."; \
+      if [ "$freshclam_status" -eq 0 ]; then break; fi; \
+      if [ "$attempt" -lt 3 ]; then sleep $((attempt * 5)); fi; \
+      attempt=$((attempt + 1)); \
+    done; \
+    if [ "$freshclam_status" -ne 0 ]; then echo "ClamAV build failed: freshclam failed after 3 attempts." >&2; exit 1; fi; \
+    if ! find /var/lib/clamav -maxdepth 1 -type f \( -name '*.cvd' -o -name '*.cld' -o -name '*.cud' \) -print -quit | grep -q .; then echo "ClamAV build failed: no supported database files were downloaded." >&2; exit 1; fi; \
+    printf '%s\n' 'ProofFlow ClamAV image build readiness check.' > /tmp/proofflow-clamav-readiness.txt; \
+    clamscan --no-summary --stdout /tmp/proofflow-clamav-readiness.txt; \
+    rm -f /tmp/proofflow-clamav-readiness.txt
+
 FROM oven/bun:1.2.15-debian
 
 ENV NODE_ENV=production \
@@ -33,8 +76,6 @@ ENV NODE_ENV=production \
 RUN apt-get update \
     && DEBIAN_FRONTEND=noninteractive apt-get install --yes --no-install-recommends \
       clamav \
-      clamav-freshclam \
-      gosu \
       nodejs \
       npm \
     && mkdir -p /var/lib/clamav \
@@ -45,13 +86,19 @@ RUN apt-get update \
 WORKDIR /app
 
 COPY --from=build /app /app
+COPY --from=clamav-definitions --chown=clamav:clamav /var/lib/clamav/ /var/lib/clamav/
 
-COPY docker/api-entrypoint.sh /usr/local/bin/proofflow-api-entrypoint
-RUN chmod 0755 /usr/local/bin/proofflow-api-entrypoint \
-    && mkdir -p /data/evidence \
-    && chown -R bun:bun /app /data
+RUN set -eu; \
+    id bun >/dev/null; \
+    if ! find /var/lib/clamav -maxdepth 1 -type f \( -name '*.cvd' -o -name '*.cld' -o -name '*.cud' \) -print -quit | grep -q .; then echo "ClamAV runtime image failed: no supported database files were copied." >&2; exit 1; fi; \
+    printf '%s\n' 'ProofFlow ClamAV runtime image readiness check.' > /tmp/proofflow-clamav-readiness.txt; \
+    clamscan --no-summary --stdout /tmp/proofflow-clamav-readiness.txt; \
+    rm -f /tmp/proofflow-clamav-readiness.txt; \
+    mkdir -p /data/evidence; \
+    chown -R bun:bun /app /data
 
 EXPOSE 8787
 
-ENTRYPOINT ["/usr/local/bin/proofflow-api-entrypoint"]
+USER root
+
 CMD ["bun", "run", "apps/api/src/server.ts"]

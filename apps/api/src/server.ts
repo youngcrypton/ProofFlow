@@ -1,10 +1,15 @@
-import { SqliteRepository } from "./sqlite-repository";
-import { createApp } from "./index";
-import { logStructured } from "./observability";
 import { validateProductionEnvironment, validateProductionRuntime } from "./production-config";
+import { prepareProductionStorage } from "./runtime-storage";
 
 validateProductionEnvironment();
+await prepareProductionStorage();
 await validateProductionRuntime();
+
+const [{ SqliteRepository }, { createApp }, { logStructured }] = await Promise.all([
+  import("./sqlite-repository"),
+  import("./index"),
+  import("./observability")
+]);
 
 const port = Number(process.env.PORT ?? 8787);
 const hostname = process.env.HOST ?? "0.0.0.0";

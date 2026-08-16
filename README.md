@@ -439,6 +439,10 @@ Evidence has two explicit paths. The JSON manifest endpoint remains available fo
 
 The current file store is local disk, not a multi-region object-storage system. Configure `PROOFFLOW_CLAMSCAN_PATH` for ClamAV-backed scanning; without a scanner, uploads fail closed unless explicit development-only unscanned mode is enabled.
 
+The production API image downloads and verifies current ClamAV definitions during the Docker build, then ships those definitions in the runtime image. Container startup never downloads definitions and does not depend on a Docker entrypoint, so `bun run apps/api/src/server.ts` performs the same fail-closed production validation when invoked directly. Baked definitions become stale over time; rebuild and redeploy the Docker image regularly to refresh them, and treat a failed `freshclam` download or build-time readiness scan as a release failure. The definitions stage accepts the `CLAMAV_DEFINITIONS_REFRESH` Docker build argument as its cache key. In Railway, define or update the build-time service variable `CLAMAV_DEFINITIONS_REFRESH` to a new explicit release value such as `2026-08-16.1` whenever a fresh definition download is required; changing that value invalidates only the definitions stage and downstream image layers.
+
+The final image starts as root only for the direct API bootstrap required to prepare a newly mounted Railway `/data` volume. Before production validation, SQLite initialization, or HTTP startup, the bootstrap creates the evidence directories, assigns `/data` recursively to the image's existing `bun` account, and drops the process group and user to `bun`. Failure to prepare the volume or drop privileges aborts startup; the serving API does not run as root.
+
 ### API boundary
 
 The API uses strict Zod validation, explicit state-transition checks, bounded request bodies, CORS allowlisting, optional bearer authentication, mutation rate limiting, request IDs, and safe error envelopes. Production configuration must not expose the demo reset route.
