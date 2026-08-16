@@ -1,4 +1,5 @@
 [build]
+# Keep this service on the API Dockerfile; Railway Config as Code overrides dashboard defaults.
 builder = "DOCKERFILE"
 dockerfilePath = "Dockerfile.api"
 
