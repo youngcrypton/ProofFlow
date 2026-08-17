@@ -70,6 +70,7 @@ export type Policy = z.infer<typeof PolicySchema>;
 export const AgreementCreateInputSchema = z.object({
   title: z.string().min(1).max(120),
   description: z.string().max(1_000).default(""),
+  acceptanceCriteria: z.string().max(2_000).default(""),
   payer: EvmAddressSchema,
   recipient: EvmAddressSchema,
   tokenAddress: EvmAddressSchema,
@@ -85,6 +86,7 @@ export const AgreementCreateInputSchema = z.object({
 export const AgreementSchema = z.object({
   title: z.string().min(1).max(120),
   description: z.string().max(1_000),
+  acceptanceCriteria: z.string().max(2_000).default(""),
   payer: EvmAddressSchema,
   recipient: EvmAddressSchema,
   tokenAddress: EvmAddressSchema,
@@ -133,6 +135,8 @@ export const EvidenceManifestContentSchema = z.object({
   agreementId: z.string().min(1),
   submittedBy: EvmAddressSchema,
   submittedAt: IsoDateSchema,
+  explanation: z.string().max(10_000).optional(),
+  notes: z.string().max(5_000).optional(),
   items: z.array(EvidenceItemSchema).min(1).max(50)
 });
 
@@ -146,6 +150,8 @@ export function canonicalizeEvidenceManifest(manifest: EvidenceManifestContent):
     agreementId: parsed.agreementId,
     submittedBy: parsed.submittedBy.toLowerCase(),
     submittedAt: parsed.submittedAt,
+    explanation: parsed.explanation ?? "",
+    notes: parsed.notes ?? "",
     items: [...parsed.items].sort((a, b) => `${a.type}:${a.name}:${a.sha256}`.localeCompare(`${b.type}:${b.name}:${b.sha256}`))
   });
 }

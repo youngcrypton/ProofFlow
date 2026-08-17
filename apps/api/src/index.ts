@@ -100,6 +100,13 @@ export function createApp(repository: ProofFlowRepository = new MemoryRepository
     if (wallet !== normalizeEvmAddress(agreement.payer) && wallet !== normalizeEvmAddress(agreement.recipient)) return c.json({ error: { code: "FORBIDDEN", message: "This wallet is not a party to the agreement." } }, 403);
     return null;
   };
+  const contractorAccess = (c: Context<{ Variables: AppVariables }>, agreement: { recipient: string }): Response | null => {
+    if (!enforceWalletAccess) return null;
+    const wallet = c.get("walletAddress");
+    if (!wallet) return c.json({ error: { code: "WALLET_AUTH_REQUIRED", message: "Connect and sign the wallet access message before submitting contractor evidence." } }, 401);
+    if (wallet !== normalizeEvmAddress(agreement.recipient)) return c.json({ error: { code: "FORBIDDEN", message: "Only the assigned contractor wallet may submit evidence." } }, 403);
+    return null;
+  };
   console.log(`Allowed Origins: ${allowedOrigins.join(", ") || "(none)"}`);
   app.use("*", cors({
     origin: (origin, c) => {
@@ -227,7 +234,7 @@ export function createApp(repository: ProofFlowRepository = new MemoryRepository
     }
     if (enforceWalletAccess && !c.get("walletAddress")) return c.json({ error: { code: "WALLET_AUTH_REQUIRED", message: "Connect and sign the wallet access message before listing agreements." } }, 401);
     if (enforceWalletAccess && address && normalizeEvmAddress(address) !== c.get("walletAddress")) return c.json({ error: { code: "FORBIDDEN", message: "The requested wallet does not match the signed wallet session." } }, 403);
-    const effectiveAddress = address ?? c.get("walletAddress");
+    const effectiveAddress = enforceWalletAccess ? c.get("walletAddress") : address ?? c.get("walletAddress");
     const agreements = repository.listAgreements().filter((agreement) => {
       if (!effectiveAddress) return true;
       const normalizedAddress = normalizeEvmAddress(effectiveAddress);
@@ -323,6 +330,7 @@ export function createApp(repository: ProofFlowRepository = new MemoryRepository
     if (!agreement) return c.json({ error: { code: "NOT_FOUND", message: "Agreement not found." } }, 404);
     const accessError = agreementAccess(c, agreement);
     if (accessError) return accessError;
+    if (enforceWalletAccess && c.get("walletAddress") !== normalizeEvmAddress(agreement.payer)) return c.json({ error: { code: "FORBIDDEN", message: "Only the client wallet may fund this agreement." } }, 403);
     if (agreement.state !== JobState.AWAITING_FUNDING) return c.json({ error: { code: "INVALID_STATE", message: "Agreement is not awaiting funding." } }, 409);
     const updated = AgreementSchema.parse({ ...agreement, state: JobState.FUNDED, updatedAt: new Date().toISOString() });
     repository.saveAgreement(updated);
@@ -365,11 +373,12 @@ export function createApp(repository: ProofFlowRepository = new MemoryRepository
     const id = c.req.param("id");
     const agreement = repository.getAgreement(id);
     if (!agreement) return c.json({ error: { code: "NOT_FOUND", message: "Agreement not found." } }, 404);
-    const accessError = agreementAccess(c, agreement);
+    const accessError = contractorAccess(c, agreement);
     if (accessError) return accessError;
     if (agreement.state !== JobState.FUNDED) return c.json({ error: { code: "INVALID_STATE", message: "Agreement must be funded before evidence submission." } }, 409);
     const parsed = EvidenceManifestContentSchema.safeParse(await c.req.json().catch(() => null));
     if (!parsed.success || parsed.data?.agreementId !== id) return c.json({ error: { code: "VALIDATION_ERROR", message: "Evidence manifest is invalid.", fields: parsed.success ? { agreementId: ["Manifest agreementId does not match the route."] } : parsed.error.flatten().fieldErrors } }, 400);
+    if (enforceWalletAccess && normalizeEvmAddress(parsed.data.submittedBy) !== c.get("walletAddress")) return c.json({ error: { code: "FORBIDDEN", message: "Evidence must be submitted by the authenticated contractor wallet." } }, 403);
     const submittedAt = parsed.data.submittedAt;
     const manifestHash = await sha256Hex(canonicalizeEvidenceManifest(parsed.data));
     const manifest = EvidenceManifestContentSchema.extend({ manifestHash: z.string() }).parse({ ...parsed.data, manifestHash });
@@ -394,7 +403,7 @@ export function createApp(repository: ProofFlowRepository = new MemoryRepository
     const id = c.req.param("id");
     const agreement = repository.getAgreement(id);
     if (!agreement) return c.json({ error: { code: "NOT_FOUND", message: "Agreement not found." } }, 404);
-    const accessError = agreementAccess(c, agreement);
+    const accessError = contractorAccess(c, agreement);
     if (accessError) return accessError;
     if (agreement.state !== JobState.FUNDED) return c.json({ error: { code: "INVALID_STATE", message: "Agreement must be funded before evidence upload." } }, 409);
     const contentType = c.req.header("content-type") ?? "";
@@ -408,6 +417,7 @@ export function createApp(repository: ProofFlowRepository = new MemoryRepository
     const type = EvidenceTypeSchema.safeParse(evidenceType);
     const actor = z.string().regex(/^0x[a-fA-F0-9]{40}$/).safeParse(submittedBy);
     if (!type.success || !actor.success) return c.json({ error: { code: "VALIDATION_ERROR", message: "Evidence type or submitter is invalid." } }, 400);
+    if (enforceWalletAccess && normalizeEvmAddress(actor.data) !== c.get("walletAddress")) return c.json({ error: { code: "FORBIDDEN", message: "Evidence must be submitted by the authenticated contractor wallet." } }, 403);
     if (upload.size > Number(process.env.PROOFFLOW_EVIDENCE_MAX_BYTES ?? 10 * 1024 * 1024)) return c.json({ error: { code: "FILE_TOO_LARGE", message: "Evidence file exceeds the configured size limit." } }, 413);
     try {
       const blob = await evidenceStore.put({ bytes: new Uint8Array(await upload.arrayBuffer()), mediaType: upload.type, originalName: upload.name });

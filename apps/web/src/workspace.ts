@@ -20,5 +20,5 @@ export function workspaceRoleLabel(role: WorkspaceRole): string {
 }
 
 export function workspaceQuery(role: WorkspaceRole | null, walletAddress: string | null): string {
-  return role && walletAddress ? `?role=${role}&address=${encodeURIComponent(walletAddress)}` : "";
+  return role && walletAddress ? `?role=${role}` : "";
 }

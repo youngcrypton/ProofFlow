@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { agreementMatchesWorkspace, AgreementSchema, JobState } from "@proofflow/domain";
-import { persistWorkspaceRole, readWorkspaceRole, WORKSPACE_ROLE_KEY } from "./workspace";
+import { persistWorkspaceRole, readWorkspaceRole, workspaceQuery, WORKSPACE_ROLE_KEY } from "./workspace";
 
 const agreement = AgreementSchema.parse({
   id: "agr_role_test",
@@ -45,5 +45,11 @@ describe("workspace role behavior", () => {
     expect(agreementMatchesWorkspace(agreement, "contractor", agreement.recipient.toUpperCase())).toBe(true);
     expect(agreementMatchesWorkspace(agreement, "client", agreement.recipient)).toBe(false);
     expect(agreementMatchesWorkspace(agreement, "contractor", "0x9999999999999999999999999999999999999999")).toBe(false);
+  });
+
+  it("sends only the selected role because the backend derives wallet ownership from the signed session", () => {
+    expect(workspaceQuery("contractor", agreement.recipient)).toBe("?role=contractor");
+    expect(workspaceQuery("client", agreement.payer)).toBe("?role=client");
+    expect(workspaceQuery(null, agreement.payer)).toBe("");
   });
 });
