@@ -45,6 +45,8 @@ describe("production container startup", () => {
     expect(definitionsStage).toContain("freshclam attempt $attempt of 3");
     expect(definitionsStage).toContain("clamscan --no-summary --stdout");
     expect(dockerfile).toContain("COPY --from=clamav-definitions --chown=clamav:clamav");
+    expect(runtimeStage).toContain("clamav-daemon");
+    expect(runtimeStage).toContain("clamdscan");
     expect(runtimeStage).not.toContain("clamav-freshclam");
     expect(railway).toContain('healthcheckPath = "/health"');
     expect(railway.match(/^startCommand\s*=\s*""\s*$/gm)).toHaveLength(1);
