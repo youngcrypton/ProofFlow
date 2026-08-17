@@ -1,6 +1,6 @@
-import { constants } from "node:fs";
-import { access, mkdir, readdir, rm, writeFile } from "node:fs/promises";
+import { mkdir, readdir, rm, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
+import { clamdPing, clamdSocketPath, scanFile } from "./clamd-client";
 
 const REQUIRED_PRODUCTION_VARIABLES = [
   "PROOFFLOW_SESSION_SECRET",
@@ -14,7 +14,7 @@ const REQUIRED_PRODUCTION_VARIABLES = [
   "PROOFFLOW_ALLOWED_ORIGIN",
   "PROOFFLOW_DB_PATH",
   "PROOFFLOW_EVIDENCE_DIR",
-  "PROOFFLOW_CLAMSCAN_PATH",
+  "PROOFFLOW_CLAMD_SOCKET",
   "PROOFFLOW_ALLOW_UNSCANNED_EVIDENCE",
   "PROOFFLOW_EVIDENCE_REQUIRE_AUTH",
   "PROOFFLOW_EVIDENCE_MAX_BYTES"
@@ -24,12 +24,12 @@ type ProductionVariable = typeof REQUIRED_PRODUCTION_VARIABLES[number];
 type Environment = Partial<Record<ProductionVariable | "NODE_ENV", string | undefined>>;
 
 type RuntimeDependencies = {
-  access: typeof access;
   mkdir: typeof mkdir;
   readdir: (path: string) => Promise<string[]>;
   writeFile: typeof writeFile;
   rm: typeof rm;
-  runScanner: (executable: string, path: string) => Promise<{ exitCode: number; output: string }>;
+  pingScanner: () => Promise<void>;
+  runScanner: (path: string) => Promise<"CLEAN" | "MALWARE">;
 };
 
 export function validateProductionEnvironment(environment: Environment = process.env): void {
@@ -48,7 +48,7 @@ export function validateProductionEnvironment(environment: Environment = process
   if (vaultAddress && !/^0x[a-fA-F0-9]{40}$/.test(vaultAddress)) errors.push("PROOFFLOW_VAULT_ADDRESS must be a valid EVM address");
   if (environment.PROOFFLOW_DB_PATH?.trim() !== "/data/proofflow.sqlite") errors.push("PROOFFLOW_DB_PATH must be /data/proofflow.sqlite in production");
   if (environment.PROOFFLOW_EVIDENCE_DIR?.trim() !== "/data/evidence") errors.push("PROOFFLOW_EVIDENCE_DIR must be /data/evidence in production");
-  if (environment.PROOFFLOW_CLAMSCAN_PATH?.trim() !== "/usr/bin/clamscan") errors.push("PROOFFLOW_CLAMSCAN_PATH must be /usr/bin/clamscan in production");
+  if (environment.PROOFFLOW_CLAMD_SOCKET?.trim() !== "/run/clamav/clamd.ctl") errors.push("PROOFFLOW_CLAMD_SOCKET must be /run/clamav/clamd.ctl in production");
   if (environment.PROOFFLOW_ALLOW_UNSCANNED_EVIDENCE?.trim() !== "false") errors.push("PROOFFLOW_ALLOW_UNSCANNED_EVIDENCE must be false in production");
   if (environment.PROOFFLOW_EVIDENCE_REQUIRE_AUTH?.trim() !== "true") errors.push("PROOFFLOW_EVIDENCE_REQUIRE_AUTH must be true in production");
   if (environment.PROOFFLOW_EVIDENCE_MAX_BYTES?.trim() !== "10485760") errors.push("PROOFFLOW_EVIDENCE_MAX_BYTES must be 10485760 in production");
@@ -59,22 +59,21 @@ export function validateProductionEnvironment(environment: Environment = process
 export async function validateProductionRuntime(environment: Environment = process.env, dependencies: Partial<RuntimeDependencies> = {}): Promise<void> {
   if (environment.NODE_ENV !== "production") return;
   const runtime: RuntimeDependencies = {
-    access,
     mkdir,
     readdir: (path) => readdir(path),
     writeFile,
     rm,
-    runScanner: runClamScan,
+    pingScanner: clamdPing,
+    runScanner: scanFile,
     ...dependencies
   };
   const databasePath = environment.PROOFFLOW_DB_PATH!;
   const evidenceDirectory = environment.PROOFFLOW_EVIDENCE_DIR!;
-  const scannerPath = environment.PROOFFLOW_CLAMSCAN_PATH!;
-
   try {
-    await runtime.access(scannerPath, constants.X_OK);
+    if (environment.PROOFFLOW_CLAMD_SOCKET !== clamdSocketPath()) throw new Error("socket mismatch");
+    await runtime.pingScanner();
   } catch {
-    throw new Error(`Production readiness failed: clamscan is unavailable or not executable at ${scannerPath}`);
+    throw new Error(`Production readiness failed: clamd is unavailable at ${environment.PROOFFLOW_CLAMD_SOCKET}`);
   }
 
   let definitionFiles: string[];
@@ -97,10 +96,8 @@ export async function validateProductionRuntime(environment: Environment = proce
   const scanProbe = join(quarantineDirectory, `.readiness-${process.pid}-${Date.now()}.txt`);
   try {
     await runtime.writeFile(scanProbe, "ProofFlow ClamAV production readiness check.\n", { flag: "wx" });
-    const scan = await runtime.runScanner(scannerPath, scanProbe);
-    if (scan.exitCode !== 0) {
-      throw new Error(`Production readiness failed: ClamAV could not scan with loaded definitions (exit ${scan.exitCode})${scan.output ? `: ${scan.output}` : ""}`);
-    }
+    const verdict = await runtime.runScanner(scanProbe);
+    if (verdict !== "CLEAN") throw new Error("Production readiness failed: clamd did not return an explicit clean verdict");
   } finally {
     await runtime.rm(scanProbe, { force: true });
   }
@@ -116,16 +113,6 @@ async function verifyWritableDirectory(label: string, path: string, runtime: Run
     const message = error instanceof Error ? error.message : String(error);
     throw new Error(`Production readiness failed: ${label} is not writable at ${path}: ${message}`);
   }
-}
-
-async function runClamScan(executable: string, path: string): Promise<{ exitCode: number; output: string }> {
-  const processHandle = Bun.spawn([executable, "--no-summary", "--stdout", path], { stdout: "pipe", stderr: "pipe" });
-  const [exitCode, stdout, stderr] = await Promise.all([
-    processHandle.exited,
-    new Response(processHandle.stdout).text(),
-    new Response(processHandle.stderr).text()
-  ]);
-  return { exitCode, output: `${stdout}\n${stderr}`.trim().slice(0, 500) };
 }
 
 function isHttpsUrl(value: string): boolean {

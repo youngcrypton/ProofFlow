@@ -12,12 +12,20 @@ describe("production container startup", () => {
     ]);
 
     expect(dockerfile).toContain("util-linux");
+    expect(dockerfile).toContain("clamav-daemon");
     expect(dockerfile).toContain('USER root');
     expect(dockerfile).toContain('ENTRYPOINT ["/usr/local/bin/proofflow-api-entrypoint"]');
     expect(dockerfile).toContain('CMD ["bun", "run", "apps/api/src/server.ts"]');
+    expect(dockerfile).toContain("sed -i 's/\\r$//' /usr/local/bin/proofflow-api-entrypoint");
     expect(entrypoint).toContain('mkdir -p /data/evidence/quarantine /data/evidence/clean');
     expect(entrypoint).toContain('chown -R bun:bun /data');
     expect(entrypoint).toContain('exec setpriv --reuid=bun --regid=bun --init-groups -- "$@"');
+    expect(entrypoint).toContain("LocalSocket /run/clamav/clamd.ctl");
+    expect(entrypoint).toContain("MaxThreads 1");
+    expect(entrypoint).toContain("clamdscan --config-file=/run/clamav/proofflow-clamd.conf --ping=1");
+    expect(entrypoint).toContain("clamd exited before becoming ready");
+    expect(entrypoint).toContain("clamd did not become ready within 60 seconds");
+    expect(entrypoint).toContain("clamd readiness scan did not return clean");
     expect(storage).not.toMatch(/initgroups|setgid|setuid/);
     expect(storage).toContain("if (uid === 0)");
   });
@@ -39,7 +47,7 @@ describe("production container startup", () => {
     expect(dockerfile).toContain("COPY --from=clamav-definitions --chown=clamav:clamav");
     expect(runtimeStage).not.toContain("clamav-freshclam");
     expect(railway).toContain('healthcheckPath = "/health"');
-    expect(railway.match(/^startCommand\s*=\s*null\s*$/gm)).toHaveLength(1);
+    expect(railway.match(/^startCommand\s*=\s*""\s*$/gm)).toHaveLength(1);
     expect(railway.match(/^startCommand\s*=/gm)).toHaveLength(1);
   });
 });

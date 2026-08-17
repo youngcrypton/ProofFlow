@@ -1,21 +1,23 @@
 import { createHash } from "node:crypto";
 import { mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import { basename, join, resolve } from "node:path";
+import { scanFile } from "./clamd-client";
 
 type ScanResult = { clean: boolean; reason?: string };
 type EvidenceScanner = (path: string) => Promise<ScanResult>;
 
 async function defaultScanner(path: string): Promise<ScanResult> {
-  const clamscan = process.env.PROOFFLOW_CLAMSCAN_PATH;
-  if (!clamscan) {
+  const socket = process.env.PROOFFLOW_CLAMD_SOCKET;
+  if (!socket) {
     if (process.env.NODE_ENV === "test" || process.env.PROOFFLOW_ALLOW_UNSCANNED_EVIDENCE === "true") return { clean: true, reason: "explicit-unscanned-development-mode" };
     return { clean: false, reason: "SCANNER_UNAVAILABLE" };
   }
-  const processHandle = Bun.spawn([clamscan, "--no-summary", "--stdout", path], { stdout: "pipe", stderr: "pipe" });
-  const exitCode = await processHandle.exited;
-  if (exitCode === 0) return { clean: true };
-  if (exitCode === 1) return { clean: false, reason: "MALWARE_DETECTED" };
-  return { clean: false, reason: "SCANNER_FAILED" };
+  try {
+    const verdict = await scanFile(path);
+    return verdict === "CLEAN" ? { clean: true } : { clean: false, reason: "MALWARE_DETECTED" };
+  } catch {
+    return { clean: false, reason: "SCANNER_FAILED" };
+  }
 }
 
 export const DEFAULT_EVIDENCE_MAX_BYTES = 10 * 1024 * 1024;
@@ -89,7 +91,6 @@ export class EvidenceStore {
     await rename(quarantine, scanPath);
     const scan = await this.scanner(scanPath);
     if (!scan.clean) {
-      await rm(scanPath, { force: true });
       throw new Error(scan.reason ?? "SCAN_FAILED");
     }
     try {

@@ -14,7 +14,7 @@ const validProductionEnvironment = {
   PROOFFLOW_ALLOWED_ORIGIN: "https://app.example",
   PROOFFLOW_DB_PATH: "/data/proofflow.sqlite",
   PROOFFLOW_EVIDENCE_DIR: "/data/evidence",
-  PROOFFLOW_CLAMSCAN_PATH: "/usr/bin/clamscan",
+  PROOFFLOW_CLAMD_SOCKET: "/run/clamav/clamd.ctl",
   PROOFFLOW_ALLOW_UNSCANNED_EVIDENCE: "false",
   PROOFFLOW_EVIDENCE_REQUIRE_AUTH: "true",
   PROOFFLOW_EVIDENCE_MAX_BYTES: "10485760"
@@ -42,7 +42,7 @@ describe("production environment validation", () => {
   it("rejects production evidence settings that weaken or bypass scanning", () => {
     expect(() => validateProductionEnvironment({ ...validProductionEnvironment, PROOFFLOW_ALLOW_UNSCANNED_EVIDENCE: "true" })).toThrow(/must be false/);
     expect(() => validateProductionEnvironment({ ...validProductionEnvironment, PROOFFLOW_EVIDENCE_REQUIRE_AUTH: "false" })).toThrow(/must be true/);
-    expect(() => validateProductionEnvironment({ ...validProductionEnvironment, PROOFFLOW_CLAMSCAN_PATH: "clamscan" })).toThrow(/must be \/usr\/bin\/clamscan/);
+    expect(() => validateProductionEnvironment({ ...validProductionEnvironment, PROOFFLOW_CLAMD_SOCKET: "/tmp/clamd.sock" })).toThrow(/must be \/run\/clamav\/clamd\.ctl/);
   });
 
   it("rejects non-durable production storage paths", () => {
@@ -58,33 +58,33 @@ describe("production environment validation", () => {
 
 describe("production runtime validation", () => {
   const successfulRuntime = {
-    access: async () => undefined,
     mkdir: async () => undefined,
     readdir: async () => ["main.cvd", "daily.cld", "bytecode.cvd"],
     writeFile: async () => undefined,
     rm: async () => undefined,
-    runScanner: async () => ({ exitCode: 0, output: "probe: OK" })
+    pingScanner: async () => undefined,
+    runScanner: async () => "CLEAN" as const
   };
 
   it("checks the scanner and writable storage before startup", async () => {
     const calls: string[] = [];
     await expect(validateProductionRuntime(validProductionEnvironment, {
       ...successfulRuntime,
-      access: async (path) => { calls.push(`access:${path}`); },
+      pingScanner: async () => { calls.push("ping"); },
       mkdir: async (path) => { calls.push(`mkdir:${path}`); return undefined; },
-      runScanner: async (path) => { calls.push(`scan:${path}`); return { exitCode: 0, output: "probe: OK" }; }
+      runScanner: async (path) => { calls.push(`scan:${path}`); return "CLEAN"; }
     })).resolves.toBeUndefined();
-    expect(calls).toContain("access:/usr/bin/clamscan");
+    expect(calls).toContain("ping");
     expect(calls).toContain("mkdir:/data");
     expect(calls).toContain("mkdir:/data/evidence");
-    expect(calls).toContain("scan:/usr/bin/clamscan");
+    expect(calls.some((call) => call.replaceAll("\\", "/").startsWith("scan:/data/evidence/quarantine/startup/"))).toBe(true);
   });
 
-  it("fails when clamscan is unavailable", async () => {
+  it("fails when clamd is unavailable", async () => {
     await expect(validateProductionRuntime(validProductionEnvironment, {
       ...successfulRuntime,
-      access: async () => { throw new Error("ENOENT"); }
-    })).rejects.toThrow(/clamscan is unavailable/);
+      pingScanner: async () => { throw new Error("ENOENT"); }
+    })).rejects.toThrow(/clamd is unavailable/);
   });
 
   it("fails when ClamAV database definitions are missing", async () => {
@@ -97,8 +97,8 @@ describe("production runtime validation", () => {
   it("fails when the ClamAV readiness scan fails", async () => {
     await expect(validateProductionRuntime(validProductionEnvironment, {
       ...successfulRuntime,
-      runScanner: async () => ({ exitCode: 2, output: "No supported database files found" })
-    })).rejects.toThrow(/loaded definitions/);
+      runScanner: async () => "MALWARE"
+    })).rejects.toThrow(/explicit clean verdict/);
   });
 
   it("fails when production storage is not writable", async () => {
