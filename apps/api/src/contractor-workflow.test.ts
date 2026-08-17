@@ -88,6 +88,15 @@ describe("wallet-scoped contractor workflow", () => {
     expect(input.recipient.slice(2)).toBe(input.recipient.slice(2).toUpperCase());
   });
 
+  it("requires a valid signed session for agreement creation and ignores browser wallet substitutions", async () => {
+    const app = createApp(new MemoryRepository());
+    const contractorToken = await session(app, contractor);
+    expect((await app.request("http://localhost/api/v1/agreements", { ...json(input) })).status).toBe(401);
+    expect((await app.request("http://localhost/api/v1/agreements", { ...json(input), headers: { "content-type": "application/json", ...auth("expired.invalid.session") } })).status).toBe(401);
+    expect((await app.request("http://localhost/api/v1/agreements", { ...json(input), headers: { "content-type": "application/json", ...auth(contractorToken) } })).status).toBe(403);
+    expect((await app.request(`http://localhost/api/v1/agreements?role=client&address=${client.address}`, { headers: auth(contractorToken) })).status).toBe(403);
+  });
+
   it("rejects contractor funding and unrelated JSON and multipart evidence submission", async () => {
     const repository = new MemoryRepository();
     const app = createApp(repository);
