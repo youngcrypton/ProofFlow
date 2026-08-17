@@ -3,7 +3,6 @@ import { Hono } from "hono";
 import type { Context } from "hono";
 import { cors } from "hono/cors";
 import { z } from "zod";
-import { clamdPing } from "./clamd-client";
 import {
   AgreementCreateInputSchema,
   AgreementSchema,
@@ -171,13 +170,7 @@ export function createApp(repository: ProofFlowRepository = new MemoryRepository
 
   const startedAt = Date.now();
 
-  app.get("/health", async (c) => {
-    if (process.env.NODE_ENV === "production") {
-      try { await clamdPing(); }
-      catch { return c.json({ ok: false, service: "proofflow-api", scanner: "unavailable" }, 503); }
-    }
-    return c.json({ ok: true, service: "proofflow-api", scanner: process.env.NODE_ENV === "production" ? "ready" : "not-required", timestamp: new Date().toISOString(), uptimeSeconds: Math.floor((Date.now() - startedAt) / 1000) });
-  });
+  app.get("/health", (c) => c.json({ ok: true, service: "proofflow-api", timestamp: new Date().toISOString(), uptimeSeconds: Math.floor((Date.now() - startedAt) / 1000) }));
 
   app.get("/metrics", (c) => {
     const metricsToken = process.env.PROOFFLOW_METRICS_TOKEN;

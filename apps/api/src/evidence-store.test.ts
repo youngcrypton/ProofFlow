@@ -27,4 +27,21 @@ describe("evidence quarantine promotion", () => {
       await expect(readFile(join(root, "clean", digest.slice(0, 2), digest.slice(2)))).rejects.toMatchObject({ code: "ENOENT" });
     } finally { await rm(root, { recursive: true, force: true }); }
   });
+
+  it("rejects production uploads when no approved scanner is available", async () => {
+    const root = await mkdtemp(join(tmpdir(), "proofflow-evidence-"));
+    const previousNodeEnv = process.env.NODE_ENV;
+    process.env.NODE_ENV = "production";
+    try {
+      const bytes = new TextEncoder().encode("unscanned");
+      const store = new EvidenceStore(root);
+      await expect(store.put({ bytes, mediaType: "text/plain", originalName: "unscanned.txt" })).rejects.toThrow("SCANNER_UNAVAILABLE");
+      const digest = createHash("sha256").update(bytes).digest("hex");
+      await expect(readFile(join(root, "clean", digest.slice(0, 2), digest))).rejects.toMatchObject({ code: "ENOENT" });
+    } finally {
+      if (previousNodeEnv === undefined) delete process.env.NODE_ENV;
+      else process.env.NODE_ENV = previousNodeEnv;
+      await rm(root, { recursive: true, force: true });
+    }
+  });
 });

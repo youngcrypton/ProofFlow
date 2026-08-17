@@ -46,7 +46,7 @@ Keep the existing JSON manifest endpoint for compatibility, but clearly label it
 - Keep only clean blobs addressable by digest, with metadata in SQLite.
 - Make the manifest reference the verified blob digest, size, media type, and server-generated retrieval URI.
 
-The available environment does not currently contain `clamscan`, so the scanner boundary must be an explicit adapter rather than a pretend clean result. The implementation should support ClamAV/`clamd` or another approved scanner, and the deployment checklist must reject production-like startup when no scanner is configured.
+The production environment does not currently provide an approved malware scanner. Evidence uploads must remain unavailable and fail closed rather than returning a pretend clean result until an approved scanner adapter is integrated.
 
 ### 3. Secure retrieval
 

@@ -1,23 +1,13 @@
 import { createHash } from "node:crypto";
 import { mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import { basename, join, resolve } from "node:path";
-import { scanFile } from "./clamd-client";
 
 type ScanResult = { clean: boolean; reason?: string };
 type EvidenceScanner = (path: string) => Promise<ScanResult>;
 
-async function defaultScanner(path: string): Promise<ScanResult> {
-  const socket = process.env.PROOFFLOW_CLAMD_SOCKET;
-  if (!socket) {
-    if (process.env.NODE_ENV === "test" || process.env.PROOFFLOW_ALLOW_UNSCANNED_EVIDENCE === "true") return { clean: true, reason: "explicit-unscanned-development-mode" };
-    return { clean: false, reason: "SCANNER_UNAVAILABLE" };
-  }
-  try {
-    const verdict = await scanFile(path);
-    return verdict === "CLEAN" ? { clean: true } : { clean: false, reason: "MALWARE_DETECTED" };
-  } catch {
-    return { clean: false, reason: "SCANNER_FAILED" };
-  }
+async function defaultScanner(): Promise<ScanResult> {
+  if (process.env.NODE_ENV === "test") return { clean: true, reason: "test-fixture-mode" };
+  return { clean: false, reason: "SCANNER_UNAVAILABLE" };
 }
 
 export const DEFAULT_EVIDENCE_MAX_BYTES = 10 * 1024 * 1024;
