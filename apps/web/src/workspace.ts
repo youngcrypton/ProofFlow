@@ -1,4 +1,5 @@
-import type { WorkspaceRole } from "@proofflow/domain";
+import { normalizeEvmAddress } from "@proofflow/domain";
+import type { Agreement, WorkspaceRole } from "@proofflow/domain";
 
 export const WORKSPACE_ROLE_KEY = "proofflow_workspace_role";
 const WORKSPACE_ROLES: WorkspaceRole[] = ["client", "contractor"];
@@ -21,4 +22,8 @@ export function workspaceRoleLabel(role: WorkspaceRole): string {
 
 export function workspaceQuery(role: WorkspaceRole | null, walletAddress: string | null): string {
   return role && walletAddress ? `?role=${role}` : "";
+}
+
+export function canFundAgreement(agreement: Agreement, walletAddress: string | null): boolean {
+  return Boolean(walletAddress) && normalizeEvmAddress(agreement.payer) === normalizeEvmAddress(walletAddress!);
 }

@@ -8,6 +8,20 @@ function mockFetch(result: string, status = 200): Fetcher {
   return async () => new Response(JSON.stringify({ jsonrpc: "2.0", id: 1, result }), { status, headers: { "content-type": "application/json" } });
 }
 
+function vaultSnapshotFetch(overrides: Partial<Record<string, string>> = {}): Fetcher {
+  let callIndex = 0;
+  const values = [
+    `0x${"0".repeat(24)}0000000000000000000000000000000000000001`,
+    `0x${"0".repeat(24)}0000000000000000000000000000000000000002`, "0x3e8", "0x0", `0x${"11".repeat(32)}`,
+    `0x${"00".repeat(32)}`, "0x0", "0x0", "0x0", "0x0", "0x0"
+  ];
+  return async (_input, init) => {
+    const request = JSON.parse(String(init?.body)) as { method: string; params?: Array<{ data?: string }> };
+    const result = request.method === "eth_chainId" ? "0x7a0" : request.method === "eth_getBalance" ? "0x0" : values[callIndex++];
+    return new Response(JSON.stringify({ jsonrpc: "2.0", id: 1, result }), { headers: { "content-type": "application/json" } });
+  };
+}
+
 describe("XLayerClient", () => {
   it("rejects non-HTTPS RPC URLs", () => {
     expect(() => new XLayerClient({ rpcUrl: "http://localhost:8545" })).toThrow("HTTPS");
@@ -37,6 +51,17 @@ describe("XLayerClient", () => {
     expect(client.previewCommitEvidence(`0x${"11".repeat(32)}` as `0x${string}`).data).toBe(`0x48942a68${"11".repeat(32)}`);
     expect(client.previewRelease().data).toBe("0x86d1a69f");
     expect(() => client.previewFund(0n)).toThrow("greater than zero");
+  });
+
+  it("resolves vault status when the configured vault matches the agreement", async () => {
+    const client = new ProofFlowVaultClient({ rpcUrl: "https://example.com", vaultAddress: "0x00000000000000000000000000000000000000aa", fetcher: vaultSnapshotFetch() });
+    const snapshot = await client.assertMatchesAgreement({ payer: "0x0000000000000000000000000000000000000001", recipient: "0x0000000000000000000000000000000000000002", amountBaseUnits: "1000", policyHash: `0x${"11".repeat(32)}` });
+    expect(snapshot.address).toBe("0x00000000000000000000000000000000000000aa");
+  });
+
+  it("rejects vault status when the configured vault does not match the agreement", async () => {
+    const client = new ProofFlowVaultClient({ rpcUrl: "https://example.com", vaultAddress: "0x00000000000000000000000000000000000000aa", fetcher: vaultSnapshotFetch() });
+    await expect(client.assertMatchesAgreement({ payer: "0x0000000000000000000000000000000000000001", recipient: "0x0000000000000000000000000000000000000009", amountBaseUnits: "1000", policyHash: `0x${"11".repeat(32)}` })).rejects.toThrow("Vault recipient does not match agreement");
   });
   it("verifies an exact successful release transaction", async () => {
     const vault = "0x00000000000000000000000000000000000000aa" as const;

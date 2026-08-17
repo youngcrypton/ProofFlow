@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { agreementMatchesWorkspace, AgreementSchema, JobState } from "@proofflow/domain";
-import { persistWorkspaceRole, readWorkspaceRole, workspaceQuery, WORKSPACE_ROLE_KEY } from "./workspace";
+import { canFundAgreement, persistWorkspaceRole, readWorkspaceRole, workspaceQuery, WORKSPACE_ROLE_KEY } from "./workspace";
 
 const agreement = AgreementSchema.parse({
   id: "agr_role_test",
@@ -51,5 +51,11 @@ describe("workspace role behavior", () => {
     expect(workspaceQuery("contractor", agreement.recipient)).toBe("?role=contractor");
     expect(workspaceQuery("client", agreement.payer)).toBe("?role=client");
     expect(workspaceQuery(null, agreement.payer)).toBe("");
+  });
+
+  it("shows agreement funding only to the normalized payer wallet", () => {
+    expect(canFundAgreement(agreement, agreement.payer.toLowerCase())).toBe(true);
+    expect(canFundAgreement(agreement, agreement.recipient)).toBe(false);
+    expect(canFundAgreement(agreement, null)).toBe(false);
   });
 });
