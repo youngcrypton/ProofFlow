@@ -95,6 +95,7 @@ export const AgreementSchema = z.object({
   policy: PolicySchema,
   id: z.string().min(1),
   policyHash: Hash32Schema,
+  vaultAddress: EvmAddressSchema.optional(),
   state: z.nativeEnum(JobState),
   createdAt: IsoDateSchema,
   updatedAt: IsoDateSchema

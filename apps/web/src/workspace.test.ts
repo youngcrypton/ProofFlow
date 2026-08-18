@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { agreementMatchesWorkspace, AgreementSchema, JobState } from "@proofflow/domain";
-import { canFundAgreement, persistWorkspaceRole, readWorkspaceRole, workspaceQuery, WORKSPACE_ROLE_KEY } from "./workspace";
+import { canFundAgreement, canSubmitEvidence, persistWorkspaceRole, readWorkspaceRole, workspaceQuery, WORKSPACE_ROLE_KEY } from "./workspace";
 
 const agreement = AgreementSchema.parse({
   id: "agr_role_test",
@@ -13,6 +13,7 @@ const agreement = AgreementSchema.parse({
   deadline: "2099-01-01T00:00:00.000Z",
   policy: { version: "role-v1", requiredEvidence: ["invoice"], minimumConfidenceBps: 9000, releaseAmountBaseUnits: "1000", deadline: "2099-01-01T00:00:00.000Z" },
   policyHash: `0x${"a".repeat(64)}`,
+  vaultAddress: "0x00000000000000000000000000000000000000aa",
   state: JobState.AWAITING_FUNDING,
   createdAt: "2026-08-01T00:00:00.000Z",
   updatedAt: "2026-08-01T00:00:00.000Z"
@@ -57,5 +58,13 @@ describe("workspace role behavior", () => {
     expect(canFundAgreement(agreement, agreement.payer.toLowerCase())).toBe(true);
     expect(canFundAgreement(agreement, agreement.recipient)).toBe(false);
     expect(canFundAgreement(agreement, null)).toBe(false);
+  });
+
+  it("shows evidence submission only to the normalized recipient after funding", () => {
+    const funded = AgreementSchema.parse({ ...agreement, state: JobState.FUNDED });
+    expect(canSubmitEvidence(funded, funded.recipient.toUpperCase())).toBe(true);
+    expect(canSubmitEvidence(funded, funded.payer)).toBe(false);
+    expect(canSubmitEvidence(funded, null)).toBe(false);
+    expect(canSubmitEvidence(agreement, agreement.recipient)).toBe(false);
   });
 });

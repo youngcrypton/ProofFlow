@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { createApp } from "./index";
 import { MemoryRepository } from "./memory-repository";
 import { EvidenceStore } from "./evidence-store";
+import { AgreementSchema, JobState } from "@proofflow/domain";
 
 const client = privateKeyToAccount(`0x${"1".repeat(64)}`);
 const contractor = privateKeyToAccount(`0x${"2".repeat(64)}`);
@@ -25,6 +26,7 @@ const input = {
 
 const json = (body: unknown): RequestInit => ({ method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
 const auth = (token: string): HeadersInit => ({ "x-proofflow-wallet-session": token });
+const markFunded = (repository: MemoryRepository, id: string) => { const agreement = repository.getAgreement(id)!; repository.saveAgreement(AgreementSchema.parse({ ...agreement, state: JobState.FUNDED })); };
 
 function uploadForm(submittedBy: string, agreementId?: string): FormData {
   const form = new FormData();
@@ -57,7 +59,7 @@ describe("wallet-scoped contractor workflow", () => {
     const created = await app.request("http://localhost/api/v1/agreements", { ...json(input), headers: { "content-type": "application/json", ...auth(clientToken) } });
     expect(created.status).toBe(201);
     const agreement = (await created.json() as { data: { id: string } }).data;
-    await app.request(`http://localhost/api/v1/agreements/${agreement.id}/fund`, { method: "POST", headers: auth(clientToken) });
+    markFunded(repository, agreement.id);
 
     const assigned = await app.request("http://localhost/api/v1/agreements?role=contractor&address=0x0000000000000000000000000000000000000001", { headers: auth(contractorToken) });
     expect(assigned.status).toBe(403);
@@ -107,7 +109,7 @@ describe("wallet-scoped contractor workflow", () => {
     const agreement = (await created.json() as { data: { id: string } }).data;
 
     expect((await app.request(`http://localhost/api/v1/agreements/${agreement.id}/fund`, { method: "POST", headers: auth(contractorToken) })).status).toBe(403);
-    expect((await app.request(`http://localhost/api/v1/agreements/${agreement.id}/fund`, { method: "POST", headers: auth(clientToken) })).status).toBe(200);
+    markFunded(repository, agreement.id);
 
     const manifest = { agreementId: agreement.id, submittedBy: unrelated.address, submittedAt: "2026-08-07T00:00:00.000Z", items: [{ type: "status_update", name: "status.txt", mediaType: "text/plain", sha256: "b".repeat(64), uri: "https://example.com/unrelated.txt" }] };
     expect((await app.request(`http://localhost/api/v1/agreements/${agreement.id}/evidence`, { ...json(manifest), headers: { "content-type": "application/json", ...auth(unrelatedToken) } })).status).toBe(403);
@@ -125,8 +127,8 @@ describe("wallet-scoped contractor workflow", () => {
     const secondInput = { ...input, title: "Other contractor agreement", recipient: unrelated.address };
     const secondResponse = await app.request("http://localhost/api/v1/agreements", { ...json(secondInput), headers: { "content-type": "application/json", ...auth(clientToken) } });
     const second = (await secondResponse.json() as { data: { id: string } }).data;
-    await app.request(`http://localhost/api/v1/agreements/${first.id}/fund`, { method: "POST", headers: auth(clientToken) });
-    await app.request(`http://localhost/api/v1/agreements/${second.id}/fund`, { method: "POST", headers: auth(clientToken) });
+    markFunded(repository, first.id);
+    markFunded(repository, second.id);
 
     expect((await app.request(`http://localhost/api/v1/agreements/${second.id}`, { headers: auth(contractorToken) })).status).toBe(403);
     const substituted = { agreementId: second.id, submittedBy: contractor.address, submittedAt: "2026-08-07T00:00:00.000Z", items: [{ type: "status_update", name: "status.txt", mediaType: "text/plain", sha256: "c".repeat(64), uri: "https://example.com/substituted.txt" }] };
@@ -150,7 +152,7 @@ describe("wallet-scoped contractor workflow", () => {
       const contractorToken = await session(app, contractor);
       const created = await app.request("http://localhost/api/v1/agreements", { ...json(input), headers: { "content-type": "application/json", ...auth(clientToken) } });
       const agreement = (await created.json() as { data: { id: string } }).data;
-      await app.request(`http://localhost/api/v1/agreements/${agreement.id}/fund`, { method: "POST", headers: auth(clientToken) });
+      markFunded(repository, agreement.id);
 
       const response = await app.request(`http://localhost/api/v1/agreements/${agreement.id}/evidence/upload`, { method: "POST", headers: auth(contractorToken), body: uploadForm(contractor.address) });
       expect(response.status).toBe(503);

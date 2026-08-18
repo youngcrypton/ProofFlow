@@ -18,6 +18,7 @@ import {
   normalizeEvmAddress
 } from "@proofflow/domain";
 import { MemoryRepository } from "./memory-repository";
+import { VaultAssociationError } from "./repository";
 import type { ProofFlowRepository } from "./repository";
 import type { AuditEvent } from "@proofflow/domain";
 import { ProofFlowVaultClient, XLayerClient } from "./xlayer";
@@ -66,7 +67,6 @@ export function createApp(repository: ProofFlowRepository = new MemoryRepository
   const allowedOrigins = parseAllowedOrigins();
   const xLayerRpcUrl = process.env.XLAYER_RPC_URL ?? "https://testrpc.xlayer.tech/terigon";
   const xLayerChainId = Number(process.env.XLAYER_CHAIN_ID ?? 1952);
-  const vaultAddress = process.env.PROOFFLOW_VAULT_ADDRESS;
   const requireAuth = process.env.NODE_ENV === "production" || process.env.PROOFFLOW_REQUIRE_AUTH === "true";
   const enforceWalletAccess = process.env.NODE_ENV === "production" || process.env.PROOFFLOW_ENFORCE_WALLET_AUTH === "true";
   const apiToken = process.env.PROOFFLOW_API_TOKEN;
@@ -107,6 +107,11 @@ export function createApp(repository: ProofFlowRepository = new MemoryRepository
     if (wallet !== normalizeEvmAddress(agreement.recipient)) return c.json({ error: { code: "FORBIDDEN", message: "Only the assigned contractor wallet may submit evidence." } }, 403);
     return null;
   };
+  const vaultClientFor = (agreement: { vaultAddress?: string }) => {
+    if (!agreement.vaultAddress) return null;
+    return new ProofFlowVaultClient({ rpcUrl: xLayerRpcUrl, expectedChainId: xLayerChainId, vaultAddress: agreement.vaultAddress as `0x${string}`, timeoutMs: RPC_TIMEOUT_MS, onRpcMetric: (metric) => observability.recordRpc(metric) });
+  };
+  const assertVaultMatches = (client: ProofFlowVaultClient, agreement: { payer: string; recipient: string; amountBaseUnits: string; deadline: string; policyHash: string }) => client.assertMatchesAgreement({ payer: agreement.payer, recipient: agreement.recipient, amountBaseUnits: agreement.amountBaseUnits, deadline: agreement.deadline, policyHash: agreement.policyHash });
   console.log(`Allowed Origins: ${allowedOrigins.join(", ") || "(none)"}`);
   app.use("*", cors({
     origin: (origin, c) => {
@@ -284,10 +289,10 @@ export function createApp(repository: ProofFlowRepository = new MemoryRepository
     if (!agreement) return c.json({ error: { code: "NOT_FOUND", message: "Agreement not found." } }, 404);
     const accessError = agreementAccess(c, agreement);
     if (accessError) return accessError;
-    if (!vaultAddress || !/^0x[a-fA-F0-9]{40}$/.test(vaultAddress)) return c.json({ error: { code: "VAULT_NOT_CONFIGURED", message: "ProofFlow vault address is not configured." } }, 503);
+    const client = vaultClientFor(agreement);
+    if (!client) return c.json({ error: { code: "VAULT_NOT_CONFIGURED", message: "This agreement's vault is not configured." } }, 409);
     try {
-      const client = new ProofFlowVaultClient({ rpcUrl: xLayerRpcUrl, expectedChainId: xLayerChainId, vaultAddress: vaultAddress as `0x${string}`, timeoutMs: RPC_TIMEOUT_MS });
-      const snapshot = await client.assertMatchesAgreement({ payer: agreement.payer, recipient: agreement.recipient, amountBaseUnits: agreement.policy.releaseAmountBaseUnits, policyHash: agreement.policyHash });
+      const snapshot = await assertVaultMatches(client, agreement);
       return c.json({ data: { agreementId: id, network: { chainId: snapshot ? xLayerChainId : 0, rpcUrl: xLayerRpcUrl }, vault: { ...snapshot, amount: snapshot.amount.toString(), deadline: snapshot.deadline.toString(), balance: snapshot.balance.toString() }, transactions: { fund: client.previewFund(snapshot.amount), commitEvidence: repository.getManifest(id) ? client.previewCommitEvidence(repository.getManifest(id)!.manifestHash as `0x${string}`) : null, release: client.previewRelease() } } });
     } catch {
       return c.json({ error: { code: "VAULT_MISMATCH", message: "The configured vault does not match this agreement." } }, 409);
@@ -317,6 +322,36 @@ export function createApp(repository: ProofFlowRepository = new MemoryRepository
     return c.json({ data: agreement }, 201);
   });
 
+  app.put("/api/v1/agreements/:id/vault", async (c) => {
+    if (!apiToken || c.req.header("authorization") !== `Bearer ${apiToken}`) return c.json({ error: { code: "UNAUTHORIZED", message: "A valid operator API token is required." } }, 401);
+    const agreement = repository.getAgreement(c.req.param("id"));
+    if (!agreement) return c.json({ error: { code: "NOT_FOUND", message: "Agreement not found." } }, 404);
+    const body = z.object({ vaultAddress: z.string().regex(/^0x[a-fA-F0-9]{40}$/) }).strict().safeParse(await c.req.json().catch(() => null));
+    if (!body.success) return c.json({ error: { code: "VALIDATION_ERROR", message: "A valid vault address is required." } }, 400);
+    try {
+      const client = new ProofFlowVaultClient({ rpcUrl: xLayerRpcUrl, expectedChainId: xLayerChainId, vaultAddress: body.data.vaultAddress as `0x${string}`, timeoutMs: RPC_TIMEOUT_MS, onRpcMetric: (metric) => observability.recordRpc(metric) });
+      await assertVaultMatches(client, agreement);
+      const now = new Date().toISOString();
+      const updated = repository.associateVault({
+        agreementId: agreement.id,
+        vaultAddress: body.data.vaultAddress,
+        expectedUpdatedAt: agreement.updatedAt,
+        updatedAt: now,
+        audit: {
+          input: { aggregateType: "AGREEMENT", aggregateId: agreement.id, eventType: "AGREEMENT_VAULT_CONFIGURED", actor: "operator", occurredAt: now, correlationId: agreement.id },
+          payload: { vaultAddress: normalizeEvmAddress(body.data.vaultAddress) }
+        }
+      });
+      return c.json({ data: updated });
+    } catch (error) {
+      if (error instanceof VaultAssociationError) {
+        const status = error.code === "AGREEMENT_NOT_FOUND" ? 404 : 409;
+        return c.json({ error: { code: error.code, message: error.message } }, status);
+      }
+      return c.json({ error: { code: "VAULT_MISMATCH", message: error instanceof Error ? error.message : "Vault does not match agreement." } }, 409);
+    }
+  });
+
   app.get("/api/v1/agreements/:id", (c) => {
     const agreement = repository.getAgreement(c.req.param("id"));
     if (!agreement) return c.json({ error: { code: "NOT_FOUND", message: "Agreement not found." } }, 404);
@@ -325,16 +360,28 @@ export function createApp(repository: ProofFlowRepository = new MemoryRepository
     return c.json({ data: agreement });
   });
 
-  app.post("/api/v1/agreements/:id/fund", (c) => {
+  app.post("/api/v1/agreements/:id/fund", async (c) => {
     const agreement = repository.getAgreement(c.req.param("id"));
     if (!agreement) return c.json({ error: { code: "NOT_FOUND", message: "Agreement not found." } }, 404);
     const accessError = agreementAccess(c, agreement);
     if (accessError) return accessError;
     if (enforceWalletAccess && c.get("walletAddress") !== normalizeEvmAddress(agreement.payer)) return c.json({ error: { code: "FORBIDDEN", message: "Only the client wallet may fund this agreement." } }, 403);
     if (agreement.state !== JobState.AWAITING_FUNDING) return c.json({ error: { code: "INVALID_STATE", message: "Agreement is not awaiting funding." } }, 409);
+    const body = z.object({ transactionHash: z.string().regex(/^0x[a-fA-F0-9]{64}$/) }).strict().safeParse(await c.req.json().catch(() => null));
+    if (!body.success) return c.json({ error: { code: "VALIDATION_ERROR", message: "A funding transaction hash is required." } }, 400);
+    const client = vaultClientFor(agreement);
+    if (!client) return c.json({ error: { code: "VAULT_NOT_CONFIGURED", message: "This agreement's vault is not configured." } }, 409);
+    try {
+      await assertVaultMatches(client, agreement);
+      await client.verifyFundingTransaction({ transactionHash: body.data.transactionHash as `0x${string}`, payer: agreement.payer, amountBaseUnits: agreement.amountBaseUnits });
+      const snapshot = await client.snapshot();
+      if (!snapshot.funded || snapshot.balance < BigInt(agreement.amountBaseUnits)) throw new Error("Agreement vault is not funded with the required amount");
+    } catch (error) {
+      return c.json({ error: { code: "FUNDING_UNVERIFIED", message: error instanceof Error ? error.message : "Funding could not be verified." } }, 409);
+    }
     const updated = AgreementSchema.parse({ ...agreement, state: JobState.FUNDED, updatedAt: new Date().toISOString() });
     repository.saveAgreement(updated);
-    repository.appendAuditEvent({ aggregateType: "AGREEMENT", aggregateId: updated.id, eventType: "AGREEMENT_FUNDED", actor: "demo-payer", occurredAt: updated.updatedAt, correlationId: updated.id }, { previousState: agreement.state, nextState: updated.state });
+    repository.appendAuditEvent({ aggregateType: "AGREEMENT", aggregateId: updated.id, eventType: "AGREEMENT_FUNDED", actor: agreement.payer, occurredAt: updated.updatedAt, correlationId: updated.id }, { previousState: agreement.state, nextState: updated.state, vaultAddress: agreement.vaultAddress, transactionHash: body.data.transactionHash });
     return c.json({ data: updated });
   });
 
@@ -559,9 +606,10 @@ export function createApp(repository: ProofFlowRepository = new MemoryRepository
     if (accessError) return accessError;
     if (body.data.walletAddress.toLowerCase() !== agreement.payer.toLowerCase()) return c.json({ error: { code: "UNAUTHORIZED_WALLET", message: "Only the agreement payer can authorize the native vault release." } }, 403);
     const now = new Date().toISOString();
-    if (!vaultAddress || !/^0x[a-fA-F0-9]{40}$/.test(vaultAddress)) return c.json({ error: { code: "VAULT_NOT_CONFIGURED", message: "ProofFlow vault address is not configured." } }, 503);
+    const verifier = vaultClientFor(agreement);
+    if (!verifier) return c.json({ error: { code: "VAULT_NOT_CONFIGURED", message: "This agreement's vault is not configured." } }, 409);
     try {
-      const verifier = new ProofFlowVaultClient({ rpcUrl: xLayerRpcUrl, expectedChainId, vaultAddress: vaultAddress as `0x${string}`, timeoutMs: RPC_TIMEOUT_MS, onRpcMetric: (metric) => observability.recordRpc(metric) });
+      await assertVaultMatches(verifier, agreement);
       await verifier.verifyReleaseIntentTransaction({ transactionHash: body.data.transactionHash as `0x${string}`, payer: agreement.payer });
     } catch (error) {
       return c.json({ error: { code: "AUTHORIZATION_UNVERIFIED", message: error instanceof Error ? error.message : "Could not verify the authorized transaction." } }, 409);
@@ -584,16 +632,16 @@ export function createApp(repository: ProofFlowRepository = new MemoryRepository
     const accessError = agreementAccess(c, agreement);
     if (accessError) return accessError;
     try {
-      const client = new XLayerClient({ rpcUrl: xLayerRpcUrl, expectedChainId: xLayerChainId, timeoutMs: RPC_TIMEOUT_MS, onRpcMetric: (metric) => observability.recordRpc(metric) });
-      if (!vaultAddress || !/^0x[a-fA-F0-9]{40}$/.test(vaultAddress)) return c.json({ error: { code: "VAULT_NOT_CONFIGURED", message: "ProofFlow vault address is not configured." } }, 503);
-      const verifier = new ProofFlowVaultClient({ rpcUrl: xLayerRpcUrl, expectedChainId: xLayerChainId, vaultAddress: vaultAddress as `0x${string}`, timeoutMs: RPC_TIMEOUT_MS });
+      const verifier = vaultClientFor(agreement);
+      if (!verifier) return c.json({ error: { code: "VAULT_NOT_CONFIGURED", message: "This agreement's vault is not configured." } }, 409);
+      await assertVaultMatches(verifier, agreement);
       const receipt = await verifier.getTransactionReceipt(body.data.transactionHash as `0x${string}`);
       if (!receipt) {
         observability.recordReconciliation("PENDING");
         return c.json({ data: { intent, status: "PENDING", receipt: null } });
       }
       await verifier.verifyReleaseTransaction({ transactionHash: body.data.transactionHash as `0x${string}`, payer: agreement.payer, recipient: agreement.recipient, amountBaseUnits: intent.amountBaseUnits, expectedBlockNumber: receipt.blockNumber });
-      if (!receipt.to || receipt.to.toLowerCase() !== vaultAddress.toLowerCase()) return c.json({ error: { code: "RECEIPT_TARGET_MISMATCH", message: "Receipt target does not match the configured ProofFlow vault." } }, 409);
+      if (!receipt.to || receipt.to.toLowerCase() !== agreement.vaultAddress!.toLowerCase()) return c.json({ error: { code: "RECEIPT_TARGET_MISMATCH", message: "Receipt target does not match the agreement vault." } }, 409);
       if (receipt.from.toLowerCase() !== agreement.payer.toLowerCase()) return c.json({ error: { code: "RECEIPT_SENDER_MISMATCH", message: "Receipt sender does not match the agreement payer." } }, 409);
       if (intent.state === "CONFIRMED" || intent.state === "FAILED") {
         observability.recordReconciliation(intent.state === "CONFIRMED" ? "CONFIRMED" : "FAILED");
@@ -627,7 +675,7 @@ export function createApp(repository: ProofFlowRepository = new MemoryRepository
   return app;
 }
 
-const repository = new MemoryRepository();
+export const repository = new MemoryRepository();
 
 export const app = createApp(repository);
 

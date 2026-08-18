@@ -2,11 +2,12 @@ import { createHash, randomUUID } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { Database } from "bun:sqlite";
-import { AgreementSchema, AuditEventSchema, EvidenceManifestSchema, ReviewRunSchema, SettlementIntentSchema } from "@proofflow/domain";
+import { AgreementSchema, AuditEventSchema, EvidenceManifestSchema, ReviewRunSchema, SettlementIntentSchema, normalizeEvmAddress } from "@proofflow/domain";
 import type { Agreement, AuditEvent, EvidenceManifest, ReviewRun, SettlementIntent } from "@proofflow/domain";
 
 export type StoredAuditEvent = AuditEvent & { payload: unknown };
-import type { AuditEventInput, ProofFlowRepository } from "./repository";
+import { VaultAssociationError } from "./repository";
+import type { AuditEventInput, ProofFlowRepository, VaultAssociationInput } from "./repository";
 
 function copy<T>(value: T): T { return structuredClone(value); }
 
@@ -31,6 +32,28 @@ export class SqliteRepository implements ProofFlowRepository {
       CREATE TABLE IF NOT EXISTS settlement_intents (id TEXT PRIMARY KEY, idempotency_key TEXT NOT NULL UNIQUE, payload TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS audit_events (aggregate_id TEXT NOT NULL, sequence INTEGER NOT NULL, event_hash TEXT NOT NULL UNIQUE, payload TEXT NOT NULL, PRIMARY KEY (aggregate_id, sequence));
     `);
+    this.migrateAgreementVaultAddresses();
+  }
+
+  private migrateAgreementVaultAddresses(): void {
+    const columns = this.db.query("PRAGMA table_info(agreements)").all() as Array<{ name: string }>;
+    if (!columns.some((column) => column.name === "vault_address")) this.db.exec("ALTER TABLE agreements ADD COLUMN vault_address TEXT");
+    const migrate = this.db.transaction(() => {
+      const rows = this.db.query("SELECT id, payload FROM agreements ORDER BY rowid ASC").all() as Array<{ id: string; payload: string }>;
+      const assigned = new Map<string, string>();
+      for (const row of rows) {
+        const agreement = AgreementSchema.parse(JSON.parse(row.payload));
+        if (!agreement.vaultAddress) continue;
+        const normalized = normalizeEvmAddress(agreement.vaultAddress);
+        const existing = assigned.get(normalized);
+        if (existing && existing !== agreement.id) throw new Error(`Existing agreements ${existing} and ${agreement.id} share vault ${normalized}`);
+        assigned.set(normalized, agreement.id);
+        const normalizedAgreement = AgreementSchema.parse({ ...agreement, vaultAddress: normalized });
+        this.db.query("UPDATE agreements SET payload = ?1, vault_address = ?2 WHERE id = ?3").run(JSON.stringify(normalizedAgreement), normalized, agreement.id);
+      }
+      this.db.exec("CREATE UNIQUE INDEX IF NOT EXISTS agreements_vault_address_unique ON agreements(vault_address) WHERE vault_address IS NOT NULL");
+    });
+    migrate();
   }
 
   listAgreements(): Agreement[] {
@@ -43,7 +66,39 @@ export class SqliteRepository implements ProofFlowRepository {
   }
 
   saveAgreement(agreement: Agreement): void {
-    this.db.query("INSERT INTO agreements (id, payload) VALUES (?1, ?2) ON CONFLICT(id) DO UPDATE SET payload = excluded.payload").run(agreement.id, JSON.stringify(agreement));
+    const vaultAddress = agreement.vaultAddress ? normalizeEvmAddress(agreement.vaultAddress) : null;
+    const normalized = AgreementSchema.parse({ ...agreement, vaultAddress: vaultAddress ?? undefined });
+    try {
+      this.db.query("INSERT INTO agreements (id, payload, vault_address) VALUES (?1, ?2, ?3) ON CONFLICT(id) DO UPDATE SET payload = excluded.payload, vault_address = excluded.vault_address").run(normalized.id, JSON.stringify(normalized), vaultAddress);
+    } catch (error) {
+      if (isVaultUniqueConstraint(error)) throw new VaultAssociationError("VAULT_ALREADY_ASSIGNED", "This vault is already assigned to another agreement.");
+      throw error;
+    }
+  }
+
+  associateVault(input: VaultAssociationInput): Agreement {
+    const associate = this.db.transaction(() => {
+      const row = this.db.query("SELECT payload FROM agreements WHERE id = ?1").get(input.agreementId) as { payload: string } | null;
+      if (!row) throw new VaultAssociationError("AGREEMENT_NOT_FOUND", "Agreement not found.");
+      const agreement = AgreementSchema.parse(JSON.parse(row.payload));
+      if (agreement.updatedAt !== input.expectedUpdatedAt) throw new VaultAssociationError("AGREEMENT_STALE", "Agreement changed before vault association completed.");
+      const vaultAddress = normalizeEvmAddress(input.vaultAddress);
+      if (agreement.vaultAddress) {
+        if (normalizeEvmAddress(agreement.vaultAddress) === vaultAddress) return agreement;
+        throw new VaultAssociationError("VAULT_ALREADY_CONFIGURED", "This agreement already has a different vault.");
+      }
+      const updated = AgreementSchema.parse({ ...agreement, vaultAddress, updatedAt: input.updatedAt });
+      try {
+        const result = this.db.query("UPDATE agreements SET payload = ?1, vault_address = ?2 WHERE id = ?3 AND vault_address IS NULL AND json_extract(payload, '$.updatedAt') = ?4").run(JSON.stringify(updated), vaultAddress, agreement.id, input.expectedUpdatedAt);
+        if (Number(result.changes) !== 1) throw new VaultAssociationError("AGREEMENT_STALE", "Agreement changed before vault association completed.");
+      } catch (error) {
+        if (isVaultUniqueConstraint(error)) throw new VaultAssociationError("VAULT_ALREADY_ASSIGNED", "This vault is already assigned to another agreement.");
+        throw error;
+      }
+      this.appendAuditEventRow(input.audit.input, input.audit.payload);
+      return updated;
+    });
+    return associate();
   }
 
   getManifest(agreementId: string): EvidenceManifest | undefined {
@@ -101,22 +156,28 @@ export class SqliteRepository implements ProofFlowRepository {
   }
 
   appendAuditEvent(input: AuditEventInput, payload: unknown): StoredAuditEvent {
-    const append = this.db.transaction(() => {
-      const previous = this.db.query("SELECT event_hash FROM audit_events WHERE aggregate_id = ?1 ORDER BY sequence DESC LIMIT 1").get(input.aggregateId) as { event_hash: string } | null;
-      const count = this.db.query("SELECT COUNT(*) AS count FROM audit_events WHERE aggregate_id = ?1").get(input.aggregateId) as { count: number };
-      const previousEventHash = previous?.event_hash ?? ZERO_HASH;
-      const eventId = `evt_${randomUUID().replaceAll("-", "").slice(0, 16)}`;
-      const sequence = Number(count.count) + 1;
-      const payloadHash = hash(JSON.stringify(payload));
-      const eventHash = hash(JSON.stringify({ ...input, eventId, sequence, payloadHash, previousEventHash }));
-      const event = { ...AuditEventSchema.parse({ ...input, id: eventId, sequence, payloadHash, previousEventHash, eventHash }), payload: copy(payload) };
-      this.db.query("INSERT INTO audit_events (aggregate_id, sequence, event_hash, payload) VALUES (?1, ?2, ?3, ?4)").run(input.aggregateId, sequence, eventHash, JSON.stringify(event));
-      return event;
-    });
+    const append = this.db.transaction(() => this.appendAuditEventRow(input, payload));
     return append();
+  }
+
+  private appendAuditEventRow(input: AuditEventInput, payload: unknown): StoredAuditEvent {
+    const previous = this.db.query("SELECT event_hash FROM audit_events WHERE aggregate_id = ?1 ORDER BY sequence DESC LIMIT 1").get(input.aggregateId) as { event_hash: string } | null;
+    const count = this.db.query("SELECT COUNT(*) AS count FROM audit_events WHERE aggregate_id = ?1").get(input.aggregateId) as { count: number };
+    const previousEventHash = previous?.event_hash ?? ZERO_HASH;
+    const eventId = `evt_${randomUUID().replaceAll("-", "").slice(0, 16)}`;
+    const sequence = Number(count.count) + 1;
+    const payloadHash = hash(JSON.stringify(payload));
+    const eventHash = hash(JSON.stringify({ ...input, eventId, sequence, payloadHash, previousEventHash }));
+    const event = { ...AuditEventSchema.parse({ ...input, id: eventId, sequence, payloadHash, previousEventHash, eventHash }), payload: copy(payload) };
+    this.db.query("INSERT INTO audit_events (aggregate_id, sequence, event_hash, payload) VALUES (?1, ?2, ?3, ?4)").run(input.aggregateId, sequence, eventHash, JSON.stringify(event));
+    return event;
   }
 
   close(): void {
     this.db.close();
   }
+}
+
+function isVaultUniqueConstraint(error: unknown): boolean {
+  return error instanceof Error && /UNIQUE constraint failed: agreements\.vault_address/i.test(error.message);
 }

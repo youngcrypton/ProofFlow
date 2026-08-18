@@ -10,7 +10,6 @@ const validProductionEnvironment = {
   PROOFFLOW_AI_API_URL: "https://ai.example/v1/chat/completions",
   XLAYER_RPC_URL: "https://rpc.example/xlayer",
   XLAYER_CHAIN_ID: "1952",
-  PROOFFLOW_VAULT_ADDRESS: `0x${"1".repeat(40)}`,
   PROOFFLOW_ALLOWED_ORIGIN: "https://app.example",
   PROOFFLOW_DB_PATH: "/data/proofflow.sqlite",
   PROOFFLOW_EVIDENCE_DIR: "/data/evidence",
@@ -26,7 +25,6 @@ describe("production environment validation", () => {
   it("reports missing required production variables", () => {
     expect(() => validateProductionEnvironment({ NODE_ENV: "production" })).toThrow(/PROOFFLOW_SESSION_SECRET is required/);
     expect(() => validateProductionEnvironment({ NODE_ENV: "production" })).toThrow(/PROOFFLOW_AI_API_KEY is required/);
-    expect(() => validateProductionEnvironment({ NODE_ENV: "production" })).toThrow(/PROOFFLOW_VAULT_ADDRESS is required/);
   });
 
   it("accepts a complete X Layer testnet production configuration", () => {
@@ -34,7 +32,7 @@ describe("production environment validation", () => {
   });
 
   it("rejects the wrong chain and malformed service configuration", () => {
-    expect(() => validateProductionEnvironment({ ...validProductionEnvironment, XLAYER_CHAIN_ID: "196", XLAYER_RPC_URL: "http://rpc.example", PROOFFLOW_AI_API_URL: "not-a-url", PROOFFLOW_VAULT_ADDRESS: "0x1234" })).toThrow(/XLAYER_CHAIN_ID must be 1952/);
+    expect(() => validateProductionEnvironment({ ...validProductionEnvironment, XLAYER_CHAIN_ID: "196", XLAYER_RPC_URL: "http://rpc.example", PROOFFLOW_AI_API_URL: "not-a-url" })).toThrow(/XLAYER_CHAIN_ID must be 1952/);
   });
 
   it("rejects production evidence settings that weaken authentication", () => {

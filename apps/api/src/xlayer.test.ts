@@ -55,13 +55,41 @@ describe("XLayerClient", () => {
 
   it("resolves vault status when the configured vault matches the agreement", async () => {
     const client = new ProofFlowVaultClient({ rpcUrl: "https://example.com", vaultAddress: "0x00000000000000000000000000000000000000aa", fetcher: vaultSnapshotFetch() });
-    const snapshot = await client.assertMatchesAgreement({ payer: "0x0000000000000000000000000000000000000001", recipient: "0x0000000000000000000000000000000000000002", amountBaseUnits: "1000", policyHash: `0x${"11".repeat(32)}` });
+    const snapshot = await client.assertMatchesAgreement({ payer: "0x0000000000000000000000000000000000000001", recipient: "0x0000000000000000000000000000000000000002", amountBaseUnits: "1000", deadline: "1970-01-01T00:00:00.000Z", policyHash: `0x${"11".repeat(32)}` });
     expect(snapshot.address).toBe("0x00000000000000000000000000000000000000aa");
   });
 
   it("rejects vault status when the configured vault does not match the agreement", async () => {
     const client = new ProofFlowVaultClient({ rpcUrl: "https://example.com", vaultAddress: "0x00000000000000000000000000000000000000aa", fetcher: vaultSnapshotFetch() });
-    await expect(client.assertMatchesAgreement({ payer: "0x0000000000000000000000000000000000000001", recipient: "0x0000000000000000000000000000000000000009", amountBaseUnits: "1000", policyHash: `0x${"11".repeat(32)}` })).rejects.toThrow("Vault recipient does not match agreement");
+    await expect(client.assertMatchesAgreement({ payer: "0x0000000000000000000000000000000000000001", recipient: "0x0000000000000000000000000000000000000009", amountBaseUnits: "1000", deadline: "1970-01-01T00:00:00.000Z", policyHash: `0x${"11".repeat(32)}` })).rejects.toThrow("Vault recipient does not match agreement");
+  });
+
+  it("fails closed for a vault amount mismatch", async () => {
+    const client = new ProofFlowVaultClient({ rpcUrl: "https://example.com", vaultAddress: "0x00000000000000000000000000000000000000aa", fetcher: vaultSnapshotFetch() });
+    await expect(client.assertMatchesAgreement({ payer: "0x0000000000000000000000000000000000000001", recipient: "0x0000000000000000000000000000000000000002", amountBaseUnits: "1001", deadline: "1970-01-01T00:00:00.000Z", policyHash: `0x${"11".repeat(32)}` })).rejects.toThrow("Vault amount does not match agreement");
+  });
+
+  it("fails closed for a vault policy hash mismatch", async () => {
+    const client = new ProofFlowVaultClient({ rpcUrl: "https://example.com", vaultAddress: "0x00000000000000000000000000000000000000aa", fetcher: vaultSnapshotFetch() });
+    await expect(client.assertMatchesAgreement({ payer: "0x0000000000000000000000000000000000000001", recipient: "0x0000000000000000000000000000000000000002", amountBaseUnits: "1000", deadline: "1970-01-01T00:00:00.000Z", policyHash: `0x${"22".repeat(32)}` })).rejects.toThrow("Vault policy hash does not match agreement");
+  });
+
+  it("fails closed for a vault deadline mismatch", async () => {
+    const client = new ProofFlowVaultClient({ rpcUrl: "https://example.com", vaultAddress: "0x00000000000000000000000000000000000000aa", fetcher: vaultSnapshotFetch() });
+    await expect(client.assertMatchesAgreement({ payer: "0x0000000000000000000000000000000000000001", recipient: "0x0000000000000000000000000000000000000002", amountBaseUnits: "1000", deadline: "1970-01-01T00:00:01.000Z", policyHash: `0x${"11".repeat(32)}` })).rejects.toThrow("Vault deadline does not match agreement");
+  });
+
+  it("rejects funding sent to another agreement vault", async () => {
+    const vault = "0x00000000000000000000000000000000000000aa" as const;
+    const otherVault = "0x00000000000000000000000000000000000000bb" as const;
+    const payer = "0x0000000000000000000000000000000000000001" as const;
+    const txHash = `0x${"cd".repeat(32)}` as `0x${string}`;
+    const fetcher: Fetcher = async (_input, init) => {
+      const method = (JSON.parse(String(init?.body)) as { method: string }).method;
+      const result = method === "eth_chainId" ? "0x7a0" : method === "eth_getTransactionByHash" ? { hash: txHash, from: payer, to: otherVault, value: "0x3e8", input: "0xb60d4288" } : { transactionHash: txHash, blockNumber: "0x10", status: "0x1", from: payer, to: otherVault, logs: [] };
+      return new Response(JSON.stringify({ jsonrpc: "2.0", id: 1, result }), { headers: { "content-type": "application/json" } });
+    };
+    await expect(new ProofFlowVaultClient({ rpcUrl: "https://example.com", vaultAddress: vault, fetcher }).verifyFundingTransaction({ transactionHash: txHash, payer, amountBaseUnits: "1000" })).rejects.toThrow("target does not match agreement vault");
   });
   it("verifies an exact successful release transaction", async () => {
     const vault = "0x00000000000000000000000000000000000000aa" as const;

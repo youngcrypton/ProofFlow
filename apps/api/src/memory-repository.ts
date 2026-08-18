@@ -1,9 +1,10 @@
 import { createHash, randomUUID } from "node:crypto";
-import { AuditEventSchema } from "@proofflow/domain";
+import { AgreementSchema, AuditEventSchema, normalizeEvmAddress } from "@proofflow/domain";
 import type { Agreement, AuditEvent, EvidenceManifest, ReviewRun, SettlementIntent } from "@proofflow/domain";
 
 export type StoredAuditEvent = AuditEvent & { payload: unknown };
-import type { AuditEventInput, ProofFlowRepository } from "./repository";
+import { VaultAssociationError } from "./repository";
+import type { AuditEventInput, ProofFlowRepository, VaultAssociationInput } from "./repository";
 
 const ZERO_HASH = `0x${"0".repeat(64)}`;
 
@@ -13,6 +14,15 @@ function hash(value: string): `0x${string}` {
 
 function copy<T>(value: T): T {
   return structuredClone(value);
+}
+
+function createStoredAuditEvent(events: StoredAuditEvent[], input: AuditEventInput, payload: unknown): StoredAuditEvent {
+  const previousEventHash = events.at(-1)?.eventHash ?? ZERO_HASH;
+  const eventId = `evt_${randomUUID().replaceAll("-", "").slice(0, 16)}`;
+  const sequence = events.length + 1;
+  const payloadHash = hash(JSON.stringify(payload));
+  const eventHash = hash(JSON.stringify({ ...input, eventId, sequence, payloadHash, previousEventHash }));
+  return { ...AuditEventSchema.parse({ ...input, id: eventId, sequence, payloadHash, previousEventHash, eventHash }), payload: copy(payload) };
 }
 
 export class MemoryRepository implements ProofFlowRepository {
@@ -32,7 +42,31 @@ export class MemoryRepository implements ProofFlowRepository {
   }
 
   saveAgreement(agreement: Agreement): void {
-    this.agreements.set(agreement.id, copy(agreement));
+    const normalized = agreement.vaultAddress ? normalizeEvmAddress(agreement.vaultAddress) : undefined;
+    if (normalized && [...this.agreements.values()].some((item) => item.id !== agreement.id && item.vaultAddress && normalizeEvmAddress(item.vaultAddress) === normalized)) {
+      throw new VaultAssociationError("VAULT_ALREADY_ASSIGNED", "This vault is already assigned to another agreement.");
+    }
+    this.agreements.set(agreement.id, copy(AgreementSchema.parse({ ...agreement, vaultAddress: normalized })));
+  }
+
+  associateVault(input: VaultAssociationInput): Agreement {
+    const agreement = this.agreements.get(input.agreementId);
+    if (!agreement) throw new VaultAssociationError("AGREEMENT_NOT_FOUND", "Agreement not found.");
+    if (agreement.updatedAt !== input.expectedUpdatedAt) throw new VaultAssociationError("AGREEMENT_STALE", "Agreement changed before vault association completed.");
+    const vaultAddress = normalizeEvmAddress(input.vaultAddress);
+    if (agreement.vaultAddress) {
+      if (normalizeEvmAddress(agreement.vaultAddress) === vaultAddress) return copy(agreement);
+      throw new VaultAssociationError("VAULT_ALREADY_CONFIGURED", "This agreement already has a different vault.");
+    }
+    if ([...this.agreements.values()].some((item) => item.id !== agreement.id && item.vaultAddress && normalizeEvmAddress(item.vaultAddress) === vaultAddress)) {
+      throw new VaultAssociationError("VAULT_ALREADY_ASSIGNED", "This vault is already assigned to another agreement.");
+    }
+    const updated = AgreementSchema.parse({ ...agreement, vaultAddress, updatedAt: input.updatedAt });
+    const events = this.auditEvents.get(input.audit.input.aggregateId) ?? [];
+    const event = createStoredAuditEvent(events, input.audit.input, input.audit.payload);
+    this.agreements.set(updated.id, copy(updated));
+    this.auditEvents.set(input.audit.input.aggregateId, [...events, event]);
+    return copy(updated);
   }
 
   getManifest(agreementId: string): EvidenceManifest | undefined {
@@ -90,12 +124,7 @@ export class MemoryRepository implements ProofFlowRepository {
 
   appendAuditEvent(input: AuditEventInput, payload: unknown): AuditEvent {
     const events = this.auditEvents.get(input.aggregateId) ?? [];
-    const previousEventHash = events.at(-1)?.eventHash ?? ZERO_HASH;
-    const eventId = `evt_${randomUUID().replaceAll("-", "").slice(0, 16)}`;
-    const sequence = events.length + 1;
-    const payloadHash = hash(JSON.stringify(payload));
-    const eventHash = hash(JSON.stringify({ ...input, eventId, sequence, payloadHash, previousEventHash }));
-    const event = { ...AuditEventSchema.parse({ ...input, id: eventId, sequence, payloadHash, previousEventHash, eventHash }), payload: copy(payload) };
+    const event = createStoredAuditEvent(events, input, payload);
     this.auditEvents.set(input.aggregateId, [...events, event]);
     return copy(event);
   }

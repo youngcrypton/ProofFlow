@@ -301,11 +301,26 @@ export class ProofFlowVaultClient extends XLayerClient {
     return { receipt, transaction, confirmationDepth, releaseEventVerified: true };
   }
 
-  async assertMatchesAgreement(input: { payer: string; recipient: string; amountBaseUnits: string; policyHash: string }): Promise<VaultSnapshot> {
+  async verifyFundingTransaction(input: { transactionHash: `0x${string}`; payer: string; amountBaseUnits: string }): Promise<TransactionReceipt> {
+    await this.assertExpectedNetwork();
+    const [transaction, receipt] = await Promise.all([this.getTransaction(input.transactionHash), this.getTransactionReceipt(input.transactionHash)]);
+    if (!transaction || !receipt) throw new Error("Funding transaction is not yet available on X Layer");
+    if (transaction.hash.toLowerCase() !== input.transactionHash.toLowerCase() || receipt.transactionHash.toLowerCase() !== input.transactionHash.toLowerCase()) throw new Error("Funding transaction hash does not match");
+    if (transaction.from.toLowerCase() !== input.payer.toLowerCase()) throw new Error("Funding transaction sender does not match agreement payer");
+    if (transaction.to?.toLowerCase() !== this.vaultAddress.toLowerCase() || receipt.to?.toLowerCase() !== this.vaultAddress.toLowerCase()) throw new Error("Funding transaction target does not match agreement vault");
+    if (transaction.value !== BigInt(input.amountBaseUnits)) throw new Error("Funding transaction amount does not match agreement");
+    const decoded = decodeFunctionData({ abi: PROOFFLOW_VAULT_ABI, data: transaction.input });
+    if (decoded.functionName !== "fund") throw new Error("Funding transaction does not call vault fund");
+    if (receipt.status !== "0x1") throw new Error("Funding transaction failed on X Layer");
+    return receipt;
+  }
+
+  async assertMatchesAgreement(input: { payer: string; recipient: string; amountBaseUnits: string; deadline: string; policyHash: string }): Promise<VaultSnapshot> {
     const snapshot = await this.snapshot();
     if (snapshot.payer.toLowerCase() !== input.payer.toLowerCase()) throw new Error("Vault payer does not match agreement");
     if (snapshot.recipient.toLowerCase() !== input.recipient.toLowerCase()) throw new Error("Vault recipient does not match agreement");
     if (snapshot.amount !== BigInt(input.amountBaseUnits)) throw new Error("Vault amount does not match agreement");
+    if (snapshot.deadline !== BigInt(Math.floor(new Date(input.deadline).getTime() / 1000))) throw new Error("Vault deadline does not match agreement");
     if (snapshot.policyHash.toLowerCase() !== input.policyHash.toLowerCase()) throw new Error("Vault policy hash does not match agreement");
     return snapshot;
   }

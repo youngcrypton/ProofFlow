@@ -315,7 +315,6 @@ Copy `.env.example` into the environment used by the API or shell. Never commit 
 | `XLAYER_RPC_URL` | X Layer RPC endpoint | `https://testrpc.xlayer.tech/terigon` |
 | `XLAYER_CHAIN_ID` | Expected chain ID | `1952` |
 | `PROOFFLOW_DB_PATH` | SQLite database path | `./data/proofflow.sqlite` |
-| `PROOFFLOW_VAULT_ADDRESS` | Deployed `ProofFlowVault` address | `0x…` |
 | `PROOFFLOW_ALLOWED_ORIGIN` | CORS allowlist origin | `http://localhost:5173` |
 | `PROOFFLOW_API_TOKEN` | Optional bearer token | secret; do not commit |
 | `PROOFFLOW_REQUIRE_AUTH` | Require bearer auth on API routes | `false` locally |
@@ -323,6 +322,8 @@ Copy `.env.example` into the environment used by the API or shell. Never commit 
 | `PROOFFLOW_RATE_LIMIT` | Mutation requests per window/IP | `60` |
 | `PROOFFLOW_RPC_TIMEOUT_MS` | X Layer RPC timeout | `8000` |
 | `PROOFFLOW_METRICS_TOKEN` | Optional production bearer token for `/metrics` | secret; do not commit |
+
+Vault addresses are persisted per agreement after an authenticated operator associates a deployed vault and the API verifies its immutable terms. The API does not hold deployer or payer private keys.
 
 For a shared or deployed environment, set `PROOFFLOW_REQUIRE_AUTH=true`, provide a high-entropy `PROOFFLOW_API_TOKEN`, keep `PROOFFLOW_ENABLE_DEMO_RESET=false`, and use an explicit HTTPS `PROOFFLOW_ALLOWED_ORIGIN`.
 

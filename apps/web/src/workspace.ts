@@ -25,5 +25,9 @@ export function workspaceQuery(role: WorkspaceRole | null, walletAddress: string
 }
 
 export function canFundAgreement(agreement: Agreement, walletAddress: string | null): boolean {
-  return Boolean(walletAddress) && normalizeEvmAddress(agreement.payer) === normalizeEvmAddress(walletAddress!);
+  return agreement.state === "AWAITING_FUNDING" && Boolean(agreement.vaultAddress) && Boolean(walletAddress) && normalizeEvmAddress(agreement.payer) === normalizeEvmAddress(walletAddress!);
+}
+
+export function canSubmitEvidence(agreement: Agreement, walletAddress: string | null): boolean {
+  return agreement.state === "FUNDED" && Boolean(walletAddress) && normalizeEvmAddress(agreement.recipient) === normalizeEvmAddress(walletAddress!);
 }

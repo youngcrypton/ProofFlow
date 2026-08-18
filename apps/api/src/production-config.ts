@@ -9,7 +9,6 @@ const REQUIRED_PRODUCTION_VARIABLES = [
   "PROOFFLOW_AI_API_URL",
   "XLAYER_RPC_URL",
   "XLAYER_CHAIN_ID",
-  "PROOFFLOW_VAULT_ADDRESS",
   "PROOFFLOW_ALLOWED_ORIGIN",
   "PROOFFLOW_DB_PATH",
   "PROOFFLOW_EVIDENCE_DIR",
@@ -38,8 +37,6 @@ export function validateProductionEnvironment(environment: Environment = process
   if (rpcUrl && !isHttpsUrl(rpcUrl)) errors.push("XLAYER_RPC_URL must be a valid HTTPS URL");
   const aiApiUrl = environment.PROOFFLOW_AI_API_URL?.trim();
   if (aiApiUrl && !isHttpsUrl(aiApiUrl)) errors.push("PROOFFLOW_AI_API_URL must be a valid HTTPS URL");
-  const vaultAddress = environment.PROOFFLOW_VAULT_ADDRESS?.trim();
-  if (vaultAddress && !/^0x[a-fA-F0-9]{40}$/.test(vaultAddress)) errors.push("PROOFFLOW_VAULT_ADDRESS must be a valid EVM address");
   if (environment.PROOFFLOW_DB_PATH?.trim() !== "/data/proofflow.sqlite") errors.push("PROOFFLOW_DB_PATH must be /data/proofflow.sqlite in production");
   if (environment.PROOFFLOW_EVIDENCE_DIR?.trim() !== "/data/evidence") errors.push("PROOFFLOW_EVIDENCE_DIR must be /data/evidence in production");
   if (environment.PROOFFLOW_EVIDENCE_REQUIRE_AUTH?.trim() !== "true") errors.push("PROOFFLOW_EVIDENCE_REQUIRE_AUTH must be true in production");
