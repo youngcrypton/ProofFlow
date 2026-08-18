@@ -59,6 +59,8 @@ describe("wallet-scoped contractor workflow", () => {
     const created = await app.request("http://localhost/api/v1/agreements", { ...json(input), headers: { "content-type": "application/json", ...auth(clientToken) } });
     expect(created.status).toBe(201);
     const agreement = (await created.json() as { data: { id: string } }).data;
+    const unpublished = await app.request("http://localhost/api/v1/agreements?role=contractor", { headers: auth(contractorToken) });
+    expect((await unpublished.json() as { data: Array<{ id: string }> }).data).toHaveLength(0);
     markFunded(repository, agreement.id);
 
     const assigned = await app.request("http://localhost/api/v1/agreements?role=contractor&address=0x0000000000000000000000000000000000000001", { headers: auth(contractorToken) });

@@ -242,6 +242,7 @@ export function createApp(repository: ProofFlowRepository = new MemoryRepository
     if (enforceWalletAccess && address && normalizeEvmAddress(address) !== c.get("walletAddress")) return c.json({ error: { code: "FORBIDDEN", message: "The requested wallet does not match the signed wallet session." } }, 403);
     const effectiveAddress = enforceWalletAccess ? c.get("walletAddress") : address ?? c.get("walletAddress");
     const agreements = repository.listAgreements().filter((agreement) => {
+      if (role === "contractor" && [JobState.DRAFT, JobState.AWAITING_FUNDING].includes(agreement.state)) return false;
       if (!effectiveAddress) return true;
       const normalizedAddress = normalizeEvmAddress(effectiveAddress);
       if (role === "client") return normalizeEvmAddress(agreement.payer) === normalizedAddress;
