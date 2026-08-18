@@ -538,7 +538,14 @@ export function createApp(repository: ProofFlowRepository = new MemoryRepository
     const body = z.object({ evidenceText: z.string().max(40_000).default("") }).safeParse(await c.req.json().catch(() => ({})));
     if (!body.success) return c.json({ error: { code: "VALIDATION_ERROR", message: "Review input is invalid.", fields: body.error.flatten().fieldErrors } }, 400);
     const reviewStartedAt = performance.now();
-    const reviewRun = await runReview(createReviewProvider(), { agreementId: id, manifest, evidenceText: body.data.evidenceText });
+    // Pass link/explanation evidence to the existing reviewer without fetching external URLs.
+    const manifestEvidence = [
+      manifest.explanation ? `Written explanation: ${manifest.explanation}` : "",
+      manifest.notes ? `Additional notes: ${manifest.notes}` : "",
+      ...manifest.items.filter((item) => item.mediaType === "text/uri-list").map((item) => `Document link: ${item.uri}`)
+    ].filter(Boolean).join("\n");
+    const evidenceText = [body.data.evidenceText, manifestEvidence].filter(Boolean).join("\n");
+    const reviewRun = await runReview(createReviewProvider(), { agreementId: id, manifest, evidenceText });
     observability.recordReview(reviewRun.status, performance.now() - reviewStartedAt);
     repository.saveReviewRun(reviewRun);
     const updated = AgreementSchema.parse({ ...agreement, state: reviewRun.status === "SUCCEEDED" ? JobState.REVIEWED : JobState.UNDER_REVIEW, updatedAt: reviewRun.completedAt ?? reviewRun.createdAt });
