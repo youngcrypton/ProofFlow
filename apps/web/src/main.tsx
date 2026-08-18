@@ -16,7 +16,7 @@ import SpotlightCard from "./components/motion/SpotlightCard";
 import DepthCarousel from "./components/motion/DepthCarousel";
 import TrustGrid from "./components/backgrounds/TrustGrid";
 import ProofNetworkField from "./components/backgrounds/ProofNetworkField";
-import { JobState, agreementMatchesWorkspace } from "@proofflow/domain";
+import { EvmAddressSchema, JobState, agreementMatchesWorkspace, normalizeEvmAddress } from "@proofflow/domain";
 import type { Agreement, AuditEvent, EvidenceManifest, EvidenceType, PolicyDecision, ReviewRun, WorkspaceRole } from "@proofflow/domain";
 import { canFundAgreement, canSubmitEvidence, persistWorkspaceRole, readWorkspaceRole, workspaceQuery, workspaceRoleLabel } from "./workspace";
 import "./styles.css";
@@ -345,7 +345,7 @@ function App() {
       const previewResponse = await api<{ transactions: { release: { to: string; value: string | bigint; data: string } } }>(`/api/v1/agreements/${agreementId}/chain-preview`);
       const tx = previewResponse.transactions.release;
       setSettlementStage("awaiting_wallet");
-      submittedHash = await provider.request({ method: "eth_sendTransaction", params: [{ from: walletAddress, to: tx.to, data: tx.data, value: `0x${BigInt(tx.value).toString(16)}` }] }) as string;
+      submittedHash = await provider.request({ method: "eth_sendTransaction", params: [{ from: normalizeEvmAddress(walletAddress), to: tx.to, data: tx.data, value: `0x${BigInt(tx.value).toString(16)}` }] }) as string;
       setSettlementHash(submittedHash); setSettlementStage("submitted");
       await api<{ intent: SettlementIntent; authorization: SettlementAuthorization }>(`/api/v1/settlement-intents/${intentResponse.id}/authorization`, { method: "POST", body: JSON.stringify({ walletAddress, transactionHash: submittedHash, chainId: confirmedChainId }) });
       setSettlementStage("confirming");
@@ -371,7 +371,7 @@ function App() {
       const tx = preview.transactions.fund;
       const currentChainId = readWalletChainId(await provider.request({ method: "eth_chainId" }));
       if (currentChainId !== EXPECTED_WALLET_CHAIN_ID) await switchToXLayer(provider);
-      const transactionHash = await provider.request({ method: "eth_sendTransaction", params: [{ from: walletAddress, to: tx.to, data: tx.data, value: `0x${BigInt(tx.value).toString(16)}` }] }) as string;
+      const transactionHash = await provider.request({ method: "eth_sendTransaction", params: [{ from: normalizeEvmAddress(walletAddress), to: tx.to, data: tx.data, value: `0x${BigInt(tx.value).toString(16)}` }] }) as string;
       let verified = false;
       for (let attempt = 0; attempt < 30 && !verified; attempt += 1) {
         try {
@@ -669,7 +669,7 @@ function CreateAgreementModal({ onClose, onCreated, walletAddress }: { onClose: 
   const policy = { version: draft.policyVersion.trim(), requiredEvidence: draft.evidenceTypes, minimumConfidenceBps: draft.minimumConfidenceBps, releaseAmountBaseUnits: amountBaseUnits, deadline: draft.deadline ? new Date(draft.deadline).toISOString() : "" };
   const body = { title: draft.title.trim(), description: draft.description.trim(), acceptanceCriteria: draft.acceptanceCriteria.trim(), payer: draft.payer.trim(), recipient: draft.recipient.trim(), tokenAddress: nativeTokenAddress, amountBaseUnits, deadline: policy.deadline, policy };
 
-  function validateAddress(value: string, label: string): string | null { return /^0x[a-fA-F0-9]{40}$/.test(value.trim()) ? null : `Enter a valid ${label.toLowerCase()} wallet address.`; }
+  function validateAddress(value: string, label: string): string | null { return EvmAddressSchema.safeParse(value.trim()).success ? null : `Enter a valid ${label.toLowerCase()} wallet address.`; }
   function validateCurrentStep(): boolean {
     const next: Record<string, string> = {};
     if (step === 1) {

@@ -16,8 +16,12 @@ export const XLAYER_TESTNET = {
 } as const;
 export type WorkspaceRole = "client" | "contractor";
 
+function toStandardEvmAddress(value: string): string {
+  return /^xko/i.test(value) ? `0x${value.slice(3)}` : value;
+}
+
 export function normalizeEvmAddress(value: string): string {
-  return value.toLowerCase();
+  return toStandardEvmAddress(value).toLowerCase();
 }
 export const MIN_PASS_CONFIDENCE_BPS = 9_000 as const;
 
@@ -37,7 +41,7 @@ export enum JobState {
   CANCELLED = "CANCELLED"
 }
 
-export const EvmAddressSchema = z.string().regex(/^0x[a-fA-F0-9]{40}$/, "Invalid EVM address");
+export const EvmAddressSchema = z.preprocess((value) => typeof value === "string" ? toStandardEvmAddress(value) : value, z.string().regex(/^0x[a-fA-F0-9]{40}$/, "Invalid EVM address"));
 export const Hash32Schema = z.string().regex(/^0x[a-fA-F0-9]{64}$/, "Invalid 32-byte hash");
 export const DecimalIntegerSchema = z.string().regex(/^\d+$/, "Expected a non-negative integer string");
 export const IsoDateSchema = z.string().datetime({ offset: true });

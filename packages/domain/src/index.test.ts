@@ -1,11 +1,14 @@
 import { describe, expect, it } from "vitest";
 import {
   AgreementCreateInputSchema,
+  AgreementSchema,
+  EvmAddressSchema,
   JobState,
   PolicySchema,
   canonicalizePolicy,
   evaluatePolicy,
-  evaluateReleaseGate
+  evaluateReleaseGate,
+  normalizeEvmAddress
 } from "./index";
 
 const baseObservation = {
@@ -25,6 +28,30 @@ const basePolicy = PolicySchema.parse({
 });
 
 describe("agreement validation", () => {
+  const body = "a9D6d8B8ba0EFa9a825CA4618427843C54665eD6";
+
+  it.each(["0x", "XKO", "xko", "Xko"])("accepts %s address input and normalizes it to standard EVM form", (prefix) => {
+    expect(EvmAddressSchema.parse(`${prefix}${body}`)).toBe(`0x${body}`);
+  });
+
+  it("compares 0x and XKO representations as the same account", () => {
+    expect(normalizeEvmAddress(`XKO${body}`)).toBe(normalizeEvmAddress(`0x${body}`));
+  });
+
+  it.each(["XKO123", `XKO${"a".repeat(39)}g`, `0x${"a".repeat(39)}g`, `OKB${"a".repeat(40)}`])("rejects malformed address %s", (value) => {
+    expect(EvmAddressSchema.safeParse(value).success).toBe(false);
+  });
+
+  it("persists XKO agreement addresses in standard EVM form", () => {
+    const parsed = AgreementCreateInputSchema.parse({
+      title: "XKO agreement", description: "", payer: `XKO${body}`, recipient: `xko${"b".repeat(40)}`,
+      tokenAddress: `0x${"c".repeat(40)}`, amountBaseUnits: "100", deadline: "2026-12-31T00:00:00.000Z", policy: basePolicy
+    });
+    expect(parsed.payer).toBe(`0x${body}`);
+    expect(parsed.recipient).toBe(`0x${"b".repeat(40)}`);
+    expect(() => AgreementSchema.parse({ ...parsed, id: "agr_xko", policyHash: `0x${"1".repeat(64)}`, state: JobState.DRAFT, createdAt: "2026-08-01T00:00:00.000Z", updatedAt: "2026-08-01T00:00:00.000Z" })).not.toThrow();
+  });
+
   it("rejects a policy that releases more than the agreement amount", () => {
     const result = AgreementCreateInputSchema.safeParse({
       title: "Invalid agreement",

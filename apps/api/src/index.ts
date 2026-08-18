@@ -8,6 +8,7 @@ import {
   AgreementSchema,
   EvidenceManifestContentSchema,
   EvidenceTypeSchema,
+  EvmAddressSchema,
   JobState,
   ReviewObservationSchema,
   PolicyDecisionSchema,
@@ -598,7 +599,7 @@ export function createApp(repository: ProofFlowRepository = new MemoryRepository
   app.post("/api/v1/settlement-intents/:id/authorization", async (c) => {
     const intent = repository.getSettlementIntent(c.req.param("id"));
     if (!intent) return c.json({ error: { code: "NOT_FOUND", message: "Settlement intent not found." } }, 404);
-    const body = z.object({ walletAddress: z.string().regex(/^0x[a-fA-F0-9]{40}$/), transactionHash: z.string().regex(/^0x[a-fA-F0-9]{64}$/), chainId: z.number().int().positive() }).safeParse(await c.req.json().catch(() => null));
+    const body = z.object({ walletAddress: EvmAddressSchema, transactionHash: z.string().regex(/^0x[a-fA-F0-9]{64}$/), chainId: z.number().int().positive() }).safeParse(await c.req.json().catch(() => null));
     if (!body.success) return c.json({ error: { code: "VALIDATION_ERROR", message: "Authorization receipt is invalid.", fields: body.error.flatten().fieldErrors } }, 400);
     if (intent.transactionHash && intent.transactionHash.toLowerCase() !== body.data.transactionHash.toLowerCase()) return c.json({ error: { code: "TRANSACTION_HASH_CONFLICT", message: "This settlement intent is already bound to a different transaction." } }, 409);
     if (intent.state !== "CREATED" && intent.state !== "AWAITING_AUTHORIZATION") {
