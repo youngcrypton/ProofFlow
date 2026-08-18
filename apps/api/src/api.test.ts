@@ -32,6 +32,36 @@ async function createFundedReadyAgreement() {
 }
 
 describe("ProofFlow API", () => {
+  it("provides exact-match operator agreement reads without changing wallet access", async () => {
+    const previousToken = process.env.PROOFFLOW_API_TOKEN;
+    const previousEnforce = process.env.PROOFFLOW_ENFORCE_WALLET_AUTH;
+    process.env.PROOFFLOW_API_TOKEN = "operator-token";
+    process.env.PROOFFLOW_ENFORCE_WALLET_AUTH = "true";
+    try {
+      const repository = new MemoryRepository();
+      const first = AgreementSchema.parse({ ...createInput(), id: "agr_operator_a", policyHash: `0x${"1".repeat(64)}`, state: JobState.AWAITING_FUNDING, createdAt: "2026-08-01T00:00:00.000Z", updatedAt: "2026-08-01T00:00:00.000Z" });
+      const second = AgreementSchema.parse({ ...first, id: "agr_operator_b" });
+      repository.saveAgreement(first);
+      repository.saveAgreement(second);
+      const isolated = createApp(repository);
+      const path = "/api/v1/operator/agreements/agr_operator_a";
+      expect((await isolated.request(`http://localhost${path}`)).status).toBe(401);
+      expect((await isolated.request(`http://localhost${path}`, { headers: { authorization: "Bearer wrong-token" } })).status).toBe(401);
+      const exact = await isolated.request(`http://localhost${path}`, { headers: { authorization: "Bearer operator-token" } });
+      expect(exact.status).toBe(200);
+      expect((await exact.json() as { data: { id: string } }).data.id).toBe(first.id);
+      expect((await isolated.request("http://localhost/api/v1/operator/agreements/unknown", { headers: { authorization: "Bearer operator-token" } })).status).toBe(404);
+      expect((await isolated.request("http://localhost/api/v1/operator/agreements", { headers: { authorization: "Bearer operator-token" } })).status).toBe(404);
+      expect((await isolated.request("http://localhost/api/v1/agreements")).status).toBe(401);
+      expect((await isolated.request(`http://localhost/api/v1/agreements/${first.id}`, { headers: { authorization: "Bearer operator-token" } })).status).toBe(401);
+      const other = await isolated.request("http://localhost/api/v1/operator/agreements/agr_operator_b", { headers: { authorization: "Bearer operator-token" } });
+      expect((await other.json() as { data: { id: string } }).data.id).toBe(second.id);
+    } finally {
+      if (previousToken === undefined) delete process.env.PROOFFLOW_API_TOKEN; else process.env.PROOFFLOW_API_TOKEN = previousToken;
+      if (previousEnforce === undefined) delete process.env.PROOFFLOW_ENFORCE_WALLET_AUTH; else process.env.PROOFFLOW_ENFORCE_WALLET_AUTH = previousEnforce;
+    }
+  });
+
   it("keeps agreements without a vault readable and reports vault setup pending", async () => {
     const created = await request("/api/v1/agreements", json({ ...createInput(), vaultAddress: address("9") }));
     const agreement = (await created.json() as { data: { id: string; vaultAddress?: string } }).data;

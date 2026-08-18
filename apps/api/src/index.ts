@@ -252,6 +252,15 @@ export function createApp(repository: ProofFlowRepository = new MemoryRepository
     return c.json({ data: agreements, nextCursor: null });
   });
 
+  app.get("/api/v1/operator/agreements/:id", (c) => {
+    if (!apiToken || c.req.header("authorization") !== `Bearer ${apiToken}`) {
+      return c.json({ error: { code: "UNAUTHORIZED", message: "A valid operator API token is required." } }, 401);
+    }
+    const agreement = repository.getAgreement(c.req.param("id"));
+    if (!agreement) return c.json({ error: { code: "NOT_FOUND", message: "Agreement not found." } }, 404);
+    return c.json({ data: agreement });
+  });
+
   app.post("/api/v1/demo/reset", async (c) => {
     if (process.env.NODE_ENV !== "test" && process.env.PROOFFLOW_ENABLE_DEMO_RESET !== "true") return c.json({ error: { code: "DEMO_RESET_DISABLED", message: "Demo reset is disabled outside explicitly enabled development mode." } }, 403);
     const now = new Date().toISOString();
