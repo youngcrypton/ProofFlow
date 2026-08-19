@@ -182,7 +182,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .setting-callout p, .settings-copy { margin: 4px 0 0; color: var(--muted); font-size: 11px; line-height: 1.6; }
 .safeguard-list { display: grid; gap: 13px; margin: 19px 0 0; padding: 0; list-style: none; color: var(--muted); font-size: 12px; }
 .safeguard-list li { padding-left: 22px; position: relative; }
-.safeguard-list li::before { content: "✓"; position: absolute; left: 0; color: var(--success); font-weight: 800; }
+.safeguard-list li::before { content: ""; position: absolute; left: 2px; top: .32em; width: 7px; height: 12px; border-right: 2px solid var(--success); border-bottom: 2px solid var(--success); transform: rotate(45deg); }
 .mobile-menu-button { display: none; }
 .side-nav a { display: none; }
 @media (max-width: 1180px) { .main-content { padding-left: 32px; padding-right: 32px; } .profile-name { display: none; } .global-search { min-width: 130px; } }
