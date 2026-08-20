@@ -14,6 +14,14 @@ contract ProofFlowVault is ReentrancyGuard {
     error VaultPaused();
     error TransferFailed();
 
+    enum VaultState {
+        CREATED,
+        FUNDED,
+        DISPUTED,
+        RELEASED,
+        REFUNDED
+    }
+
     struct Agreement {
         address payer;
         address recipient;
@@ -32,10 +40,20 @@ contract ProofFlowVault is ReentrancyGuard {
     uint64 public immutable deadline;
     bytes32 public immutable policyHash;
     bytes32 public evidenceHash;
-    bool public funded;
-    bool public released;
-    bool public disputed;
+    VaultState public state;
     bool public paused;
+
+    function funded() public view returns (bool) {
+        return state != VaultState.CREATED;
+    }
+
+    function released() public view returns (bool) {
+        return state == VaultState.RELEASED;
+    }
+
+    function disputed() public view returns (bool) {
+        return state == VaultState.DISPUTED;
+    }
 
     event Funded(address indexed payer, uint256 amount);
     event EvidenceCommitted(bytes32 indexed evidenceHash);
@@ -55,6 +73,7 @@ contract ProofFlowVault is ReentrancyGuard {
         amount = amount_;
         deadline = deadline_;
         policyHash = policyHash_;
+        state = VaultState.CREATED;
     }
 
     receive() external payable {
@@ -68,7 +87,7 @@ contract ProofFlowVault is ReentrancyGuard {
     function commitEvidence(bytes32 evidenceHash_) external {
         if (paused) revert VaultPaused();
         if (msg.sender != payer && msg.sender != recipient) revert NotReady();
-        if (!funded || released || disputed) revert NotReady();
+        if (state != VaultState.FUNDED) revert NotReady();
         if (evidenceHash_ == bytes32(0)) revert InvalidAmount();
         evidenceHash = evidenceHash_;
         emit EvidenceCommitted(evidenceHash_);
@@ -77,9 +96,9 @@ contract ProofFlowVault is ReentrancyGuard {
     function release() external nonReentrant {
         if (paused) revert VaultPaused();
         if (msg.sender != payer) revert NotPayer();
-        if (!funded || released || disputed || evidenceHash == bytes32(0)) revert NotReady();
-        released = true;
-        (bool success,) = payable(recipient).call{value: amount}('');
+        if (state != VaultState.FUNDED || evidenceHash == bytes32(0)) revert NotReady();
+        state = VaultState.RELEASED;
+        (bool success,) = payable(recipient).call{value: amount}("");
         if (!success) revert TransferFailed();
         emit Released(recipient, amount);
     }
@@ -87,22 +106,22 @@ contract ProofFlowVault is ReentrancyGuard {
     function openDispute() external {
         if (paused) revert VaultPaused();
         if (msg.sender != payer && msg.sender != recipient) revert NotReady();
-        if (!funded || released || disputed) revert NotReady();
-        disputed = true;
+        if (state != VaultState.FUNDED) revert NotReady();
+        state = VaultState.DISPUTED;
         emit DisputeOpened(msg.sender);
     }
 
     function resolveDispute(bool releaseFunds) external nonReentrant {
         if (paused) revert VaultPaused();
-        if (msg.sender != payer || !disputed || released) revert NotReady();
-        disputed = false;
+        if (msg.sender != payer || state != VaultState.DISPUTED) revert NotReady();
         if (releaseFunds) {
-            released = true;
-            (bool success,) = payable(recipient).call{value: amount}('');
+            state = VaultState.RELEASED;
+            (bool success,) = payable(recipient).call{value: amount}("");
             if (!success) revert TransferFailed();
             emit Released(recipient, amount);
         } else {
-            (bool success,) = payable(payer).call{value: amount}('');
+            state = VaultState.REFUNDED;
+            (bool success,) = payable(payer).call{value: amount}("");
             if (!success) revert TransferFailed();
             emit Refunded(payer, amount);
         }
@@ -111,9 +130,9 @@ contract ProofFlowVault is ReentrancyGuard {
 
     function refundAfterDeadline() external nonReentrant {
         if (paused) revert VaultPaused();
-        if (msg.sender != payer || !funded || released || disputed || block.timestamp <= deadline) revert NotReady();
-        released = true;
-        (bool success,) = payable(payer).call{value: amount}('');
+        if (msg.sender != payer || state != VaultState.FUNDED || block.timestamp <= deadline) revert NotReady();
+        state = VaultState.REFUNDED;
+        (bool success,) = payable(payer).call{value: amount}("");
         if (!success) revert TransferFailed();
         emit Refunded(payer, amount);
     }
@@ -133,9 +152,9 @@ contract ProofFlowVault is ReentrancyGuard {
     function _fund() internal {
         if (paused) revert VaultPaused();
         if (msg.sender != payer) revert NotPayer();
-        if (funded) revert AlreadyFunded();
+        if (state != VaultState.CREATED) revert AlreadyFunded();
         if (msg.value != amount) revert InvalidAmount();
-        funded = true;
+        state = VaultState.FUNDED;
         emit Funded(msg.sender, msg.value);
     }
 }
