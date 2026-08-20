@@ -4,15 +4,18 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
-    "dev": "concurrently -k \"npm run dev -w @proofflow/api\" \"npm run dev -w @proofflow/web\"",
-    "build": "tsc -b --force packages/domain apps/api && npm run build -w @proofflow/web",
+    "dev": "node api.js && concurrently -k \"npm run dev -w @proofflow/api\" \"npm run dev -w @proofflow/web\"",
+    "build": "node api.js && tsc -b --force packages/domain apps/api && npm run build -w @proofflow/web",
     "build:api": "tsc -b --force packages/domain apps/api",
     "start:web": "bun run apps/web/server.js",
     "typecheck": "tsc -b",
     "test": "vitest run",
     "check": "npm run typecheck && npm run test && npm run build"
   },
-  "workspaces": ["packages/*", "apps/*"],
+  "workspaces": [
+    "packages/*",
+    "apps/*"
+  ],
   "devDependencies": {
     "@types/react": "^19.1.2",
     "@types/react-dom": "^19.1.2",
